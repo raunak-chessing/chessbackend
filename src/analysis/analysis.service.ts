@@ -2,12 +2,16 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Chess } from 'chess.js';
 import { AnalysisMove, AnalysisResult } from '../types';
+import { RedisService } from '../redis/redis.service';
 
 @Injectable()
 export class AnalysisService {
   private readonly logger = new Logger(AnalysisService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
+  ) {}
 
   async analyzeGame(gameId: string) {
     const game = await this.prisma.game.findUnique({ where: { id: gameId } });
@@ -59,17 +63,43 @@ export class AnalysisService {
 
       const promises = chunk.map(async (pos) => {
         try {
+          const redisClient = this.redisService.getClient();
+          const cacheKey = `fen_eval:${pos.fen}`;
+          const cached = await redisClient.get(cacheKey);
+          
+          if (cached) {
+            const data = JSON.parse(cached);
+            return {
+              ...pos,
+              eval: data.eval || 0,
+              mate: data.mate || null,
+              bestMove: data.move || null,
+              centipawns: typeof data.centipawns === 'string' ? parseInt(data.centipawns) : data.centipawns || data.eval * 100 || 0,
+              depth: 15,
+            };
+          }
+
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 5000); // 5s timeout
+
           const res = await fetch('https://chess-api.com/v1', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ fen: pos.fen, depth: 15 }),
+            signal: controller.signal,
           });
+          clearTimeout(timeout);
+          
           const data = (await res.json()) as {
             eval: number;
             mate: number | null;
             move: string;
             centipawns: string | number;
           };
+
+          // Cache for 30 days
+          await redisClient.set(cacheKey, JSON.stringify(data), 'EX', 30 * 24 * 60 * 60);
+
           return {
             ...pos,
             eval: data.eval || 0,
@@ -150,54 +180,60 @@ export class AnalysisService {
           } else {
             classification = 'Blunder';
             explanation =
-              'A critical error that severely worsens your position.';
+              'A catastrophic oversight, Commander! The enemy advances uncontested.';
             if (evalChange <= -300)
               explanation =
-                'Blundered significant material or positional advantage.';
+                'A grievous error! You have surrendered massive tactical advantage to the Void.';
           }
         } else if (probLoss > 10 || evalChange <= -150) {
           classification = 'Mistake';
-          explanation = 'A poor move that worsens your position.';
+          explanation = 'A poor judgment. The front lines weaken.';
         } else if (probLoss > 5 || evalChange <= -50) {
           classification = 'Inaccuracy';
-          explanation = 'A suboptimal move. There were better options.';
+          explanation = 'Suboptimal deployment. The Seer senses a better path existed.';
         } else if (
           probLoss < -10 &&
           currCp * (curr.color === 'w' ? 1 : -1) < 0
         ) {
           classification = 'Miss';
-          explanation = 'Missed a tactical opportunity.';
+          explanation = 'You hesitated! A tactical opportunity slipped through your fingers.';
         } else if (curr.move === prev.bestMove) {
           classification = 'Best Move';
-          explanation = 'The strongest move in the position.';
+          explanation = 'The Seer nods approvingly. The optimal strike.';
         } else if (
           evalChange > 0 &&
           currCp * (curr.color === 'w' ? 1 : -1) > 300
         ) {
           // If we are already winning a lot and found a move that increases eval
           classification = 'Great';
-          explanation = 'A powerful move that builds your advantage.';
+          explanation = 'A powerful maneuver! The enemy crumbles before you.';
         } else if (probLoss <= 0.5) {
           classification = 'Excellent';
-          explanation = 'A very strong move.';
+          explanation = 'A masterful command decision.';
         } else {
           classification = 'Good';
-          explanation = 'A solid, playable move.';
+          explanation = 'A solid, reliable stance.';
         }
 
-        // Brilliant move logic (very basic heuristic: sacrifice material for advantage)
-        // A true brilliant move requires deep analysis, but we simulate it if a piece is lost but eval improves significantly
-        if (
-          evalChange > 200 &&
-          curr.move &&
-          curr.move.includes('x') === false &&
-          prevCp < currCp
-        ) {
-          // We'll occasionally mark very high eval jumps as brilliant for fun if it wasn't a capture
-          if (Math.random() > 0.8) {
+        // Brilliant move logic (material sacrifice for advantage)
+        const getMaterial = (fen: string, color: 'w'|'b') => {
+            const pieces = fen.split(' ')[0];
+            const charToVal: Record<string, number> = { p: 1, n: 3, b: 3, r: 5, q: 9, P: 1, N: 3, B: 3, R: 5, Q: 9 };
+            let total = 0;
+            for (const c of pieces) {
+                if (color === 'w' && c === c.toUpperCase() && charToVal[c]) total += charToVal[c];
+                if (color === 'b' && c === c.toLowerCase() && charToVal[c]) total += charToVal[c];
+            }
+            return total;
+        };
+
+        const prevMat = getMaterial(prev.fen, curr.color as 'w'|'b');
+        const currMat = getMaterial(curr.fen, curr.color as 'w'|'b');
+
+        if (currMat < prevMat && evalChange >= -50) {
+            // Material was sacrificed (lost), but evaluation stayed stable or improved
             classification = 'Brilliant';
-            explanation = 'A spectacular move!';
-          }
+            explanation = 'A brilliant sacrifice! You gave up material for a decisive advantage.';
         }
       }
 

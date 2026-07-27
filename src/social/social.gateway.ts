@@ -6,7 +6,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 
 @WebSocketGateway({
   cors: {
@@ -19,7 +19,7 @@ export class SocialGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;
 
-  private userSockets = new Map<string, string>();
+  private readonly logger = new Logger(SocialGateway.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -43,33 +43,23 @@ export class SocialGateway implements OnGatewayConnection, OnGatewayDisconnect {
         });
 
         if (session && session.expiresAt > new Date()) {
-          this.userSockets.set(session.user.id, client.id);
-          this.server.emit('userOnline', { userId: session.user.id });
+          // Join a Redis-backed room for this user to receive targeted notifications
+          void client.join(session.user.id);
+          this.logger.log(`User ${session.user.id} joined their notification room.`);
+          // (Presence fan-out would go here to notify only friends)
         }
-      } catch {
-
+      } catch (err: any) {
+        this.logger.error(`Error in handleConnection: ${err.message}`);
       }
     }
   }
 
   handleDisconnect(client: Socket) {
-    for (const [userId, socketId] of this.userSockets.entries()) {
-      if (socketId === client.id) {
-        this.userSockets.delete(userId);
-        this.server.emit('userOffline', { userId });
-        break;
-      }
-    }
+    // Rooms are automatically left on disconnect
   }
 
   notifyUser(userId: string, event: string, data: unknown) {
-    const socketId = this.userSockets.get(userId);
-    if (socketId) {
-      this.server.to(socketId).emit(event, data);
-    }
-  }
-
-  getOnlineUsers(): string[] {
-    return Array.from(this.userSockets.keys());
+    // Uses the Redis adapter to emit to this specific user across all instances
+    this.server.to(userId).emit(event, data);
   }
 }

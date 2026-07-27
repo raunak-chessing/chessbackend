@@ -111,8 +111,16 @@ model User {
   
   factionId          String?
   faction            Faction?  @relation(fields: [factionId], references: [id])
+  factionRank        String    @default("GRUNT")
+  factionContribution Int      @default(0)
+  
+  divisionId         String?
+  division           UserDivision? @relation(fields: [divisionId], references: [id])
   
   isFlaggedForCheating Boolean @default(false)
+  flaggedReason        String?
+  averageCaps          Float   @default(0)
+  gamesAnalyzed        Int     @default(0)
 
   // Payments & Subscription
   isPremium            Boolean @default(false)
@@ -120,6 +128,10 @@ model User {
   stripeSubscriptionId String? @unique
 
   inventory          PlayerInventory?
+
+  @@index([factionContribution(sort: Desc)])
+  @@index([rating(sort: Desc)])
+  @@index([factionId])
 }
 
 model Session {
@@ -378,6 +390,8 @@ model UserQuest {
   completed     Boolean  @default(false)
   rewardClaimed Boolean  @default(false)
   expiresAt     DateTime // Defines when the daily quest resets
+  chainId       String?  // For quest chains
+  loreUnlockId  String?  // For lore unlocks
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -391,11 +405,31 @@ model Faction {
   description String?
   colorTheme  String   @default("blue") // e.g. "amber", "blue", "red"
   totalScore  Int      @default(0)
+  trait       String   @default("NONE")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
   users       User[]
   hexes       WorldHex[]
+  erasWon     FactionEra[] @relation("EraWinner")
+  treasury    FactionTreasury?
+}
+
+model FactionTreasury {
+  id          String   @id @default(cuid())
+  factionId   String   @unique
+  faction     Faction  @relation(fields: [factionId], references: [id], onDelete: Cascade)
+  gold        Int      @default(0)
+  aetherium   Int      @default(0)
+}
+
+model FactionEra {
+  id          String   @id @default(uuid())
+  eraNumber   Int      @unique
+  startDate   DateTime @default(now())
+  endDate     DateTime?
+  winnerId    String?
+  winner      Faction? @relation("EraWinner", fields: [winnerId], references: [id])
 }
 
 model WorldHex {
@@ -404,6 +438,10 @@ model WorldHex {
   r               Int      // Hex axial coordinate R
   s               Int      // Hex axial coordinate S (q + r + s = 0)
   terrain         HexTerrain @default(PLAINS)
+  hp              Int      @default(10000)
+  maxHp           Int      @default(10000)
+  resourceType    String?  // "GOLD", "AETHERIUM"
+  resourceYield   Int      @default(0)
   controllingFactionId String?
   controllingFaction   Faction? @relation(fields: [controllingFactionId], references: [id])
   
@@ -414,9 +452,10 @@ model WorldHex {
 
 model Structure {
   id          String   @id @default(cuid())
-  type        String   // e.g. "CLOCKTOWER", "BARRICADE"
+  type        String   // "WATCHTOWER", "CITADEL", "AETHERIUM_FORGE"
   hexId       String
   hex         WorldHex @relation(fields: [hexId], references: [id], onDelete: Cascade)
+  builtAt     DateTime @default(now())
 }
 
 model PlayerInventory {
@@ -444,4 +483,13 @@ model SystemLog {
   message   String
   meta      Json?
   createdAt DateTime @default(now())
+}
+
+model UserDivision {
+  id        String   @id @default(uuid())
+  tier      String   @default("WOOD") // e.g. WOOD, STONE, BRONZE, SILVER, CRYSTAL, ELITE, CHAMPION, LEGEND
+  seasonEnd DateTime // When the current weekly season ends
+  createdAt DateTime @default(now())
+  
+  users     User[]
 }

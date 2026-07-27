@@ -26,7 +26,6 @@ export class QuestsService {
   async getActiveQuests(userId: string) {
     const now = new Date();
 
-    // Find unexpired quests
     let quests = await this.prisma.userQuest.findMany({
       where: {
         userId,
@@ -34,16 +33,31 @@ export class QuestsService {
       },
     });
 
-    // If user has no active quests today, generate 3 random ones
     if (quests.length === 0) {
       const endOfDay = this.getEndOfDay();
+      
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { rating: true }
+      });
+      const elo = user?.rating || 1200;
 
-      // Select 3 unique random quests
-      const shuffled = [...QUEST_TYPES].sort(() => 0.5 - Math.random());
-      const selected = shuffled.slice(0, 3);
+      // Dynamic generation based on Elo
+      const generated: any[] = [];
+      if (elo < 1000) {
+        generated.push({ id: 'SOLVE_PUZZLES_BASIC', target: 5, chainId: 'BEGINNER_TACTICS' });
+        generated.push({ id: 'WIN_GAMES_RAPID', target: 2 });
+      } else if (elo < 1800) {
+        generated.push({ id: 'SOLVE_PUZZLES_INTERMEDIATE', target: 10, chainId: 'ADVANCED_TACTICS' });
+        generated.push({ id: 'WIN_GAMES_BLITZ', target: 3 });
+      } else {
+        generated.push({ id: 'SOLVE_PUZZLES_EXPERT', target: 15, loreUnlockId: 'LORE_GRANDMASTER_1' });
+        generated.push({ id: 'WIN_GAMES_BULLET', target: 5 });
+      }
+      generated.push({ id: 'PLAY_BATTLES', target: 2 });
 
       const newQuests = await Promise.all(
-        selected.map((q) =>
+        generated.map((q) =>
           this.prisma.userQuest.create({
             data: {
               userId,
@@ -52,6 +66,8 @@ export class QuestsService {
               progress: 0,
               completed: false,
               expiresAt: endOfDay,
+              chainId: q.chainId || null,
+              loreUnlockId: q.loreUnlockId || null,
             },
           }),
         ),
@@ -110,26 +126,43 @@ export class QuestsService {
     if (!quest.completed) throw new Error('Quest not completed');
     if (quest.rewardClaimed) throw new Error('Reward already claimed');
 
-    // Grant 100 gold and 10 aetherium for completing a quest
-    await this.prisma.$transaction([
-      this.prisma.userQuest.update({
+    // Dynamic scaling for rewards based on quest target
+    const goldReward = quest.target * 50;
+    const aetheriumReward = quest.target * 5;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.userQuest.update({
         where: { id: quest.id },
         data: { rewardClaimed: true },
-      }),
-      this.prisma.playerInventory.upsert({
+      });
+      
+      await tx.playerInventory.upsert({
         where: { userId },
         create: {
           userId,
-          gold: 100,
-          aetherium: 10,
+          gold: goldReward,
+          aetherium: aetheriumReward,
         },
         update: {
-          gold: { increment: 100 },
-          aetherium: { increment: 10 },
+          gold: { increment: goldReward },
+          aetherium: { increment: aetheriumReward },
         },
-      }),
-    ]);
+      });
 
-    return { success: true, reward: { gold: 100, aetherium: 10 } };
+      // Handle Lore Unlock
+      if (quest.loreUnlockId) {
+        await tx.userAchievement.upsert({
+          where: { userId_achievement: { userId, achievement: quest.loreUnlockId } },
+          create: { userId, achievement: quest.loreUnlockId },
+          update: {} // already unlocked
+        });
+      }
+    });
+
+    return { 
+      success: true, 
+      reward: { gold: goldReward, aetherium: aetheriumReward },
+      loreUnlocked: quest.loreUnlockId || null
+    };
   }
 }

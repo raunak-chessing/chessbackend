@@ -160,17 +160,12 @@ export class TournamentsService {
       this.logger.log(`Tournament ended: ${t.id}`);
 
 
-      const players = await this.prisma.tournamentPlayer.findMany({
-        where: { tournamentId: t.id },
-        orderBy: { score: 'desc' },
-      });
-
-      for (let i = 0; i < players.length; i++) {
-        await this.prisma.tournamentPlayer.update({
-          where: { id: players[i].id },
-          data: { rank: i + 1 },
-        });
-      }
+      await this.prisma.$executeRaw`
+        UPDATE "TournamentPlayer" tp
+        SET rank = sub.rn
+        FROM (SELECT id, ROW_NUMBER() OVER (ORDER BY score DESC) as rn FROM "TournamentPlayer" WHERE "tournamentId" = ${t.id}) sub
+        WHERE tp.id = sub.id
+      `;
     }
   }
 }

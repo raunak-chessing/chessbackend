@@ -29,6 +29,7 @@ import { ObservabilityModule } from './observability/observability.module';
 import { PaymentsModule } from './payments/payments.module';
 import { OverworldModule } from './overworld/overworld.module';
 import { OpeningsModule } from './openings/openings.module';
+import { VoteChessModule } from './vote-chess/vote-chess.module';
 
 @Module({
   imports: [
@@ -82,6 +83,7 @@ import { OpeningsModule } from './openings/openings.module';
     PaymentsModule,
     OverworldModule,
     OpeningsModule,
+    VoteChessModule,
   ],
   controllers: [AppController],
   providers: [

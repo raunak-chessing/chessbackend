@@ -1,7 +1,10 @@
-import { NestFactory } from '@nestjs/core';
+import './instrument';
+import { NestFactory, HttpAdapterHost } from '@nestjs/core';
+import * as Sentry from '@sentry/nestjs';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { RedisIoAdapter } from './redis-io.adapter';
+import { SentryGlobalFilter } from './sentry.filter';
 import helmet from 'helmet';
 
 async function bootstrap() {
@@ -11,6 +14,9 @@ async function bootstrap() {
 
   // Security
   app.use(helmet());
+
+  const { httpAdapter } = app.get(HttpAdapterHost);
+  app.useGlobalFilters(new SentryGlobalFilter(httpAdapter));
 
   app.enableCors({
     origin: ['http://localhost:3000'],

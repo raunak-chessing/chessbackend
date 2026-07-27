@@ -2,12 +2,16 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { AnalysisService } from '../analysis/analysis.service';
 
 @Processor('anti-cheat-queue')
 export class AntiCheatProcessor extends WorkerHost {
   private readonly logger = new Logger(AntiCheatProcessor.name);
 
-  constructor(private readonly prisma: PrismaService) {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly analysisService: AnalysisService,
+  ) {
     super();
   }
 
@@ -15,39 +19,75 @@ export class AntiCheatProcessor extends WorkerHost {
     this.logger.log(`Processing anti-cheat check for game ${job.data.gameId}`);
 
     const { gameId, whitePlayerId, blackPlayerId, pgn, moves } = job.data;
+    if (!pgn || pgn.trim() === '') {
+      return { status: 'skipped', reason: 'No PGN provided' };
+    }
 
-    // Simulate basic lightweight heuristic classification
-    // 1. Move time variance (if moves are provided with timestamps)
-    // 2. High percentage of instant moves (less than 1s)
+    try {
+      // 1. Fetch real CAPS accuracy using AnalysisService
+      const analysis = await this.analysisService.analyzePgn(pgn);
+      const whiteAccuracy = analysis.whiteAccuracy;
+      const blackAccuracy = analysis.blackAccuracy;
 
-    // For now, let's simulate a quick heuristic algorithm
-    let suspiciousUserId: string | null = null;
-    let suspiciousReason = '';
+      const flagUser = async (userId: string, currentAccuracy: number) => {
+        const user = await this.prisma.user.findUnique({ where: { id: userId } });
+        if (!user) return null;
 
-    // Simulate some logic here (mocked for now, to be replaced by actual engine in future)
-    if (moves && moves.length > 20) {
-      // Mock logic: randomly flag 1 in 1000, or explicitly flag if some test condition is met
-      // Here we just parse the PGN and check if someone played flawlessly fast
-      const fastMovesThreshold = 0.8; 
-      // Imagine we found 80% of moves played in exactly 2.5 seconds
-      // Let's mock a detection if the PGN contains a specific signature
-      if (pgn && pgn.includes('flag_me_please')) {
-         suspiciousUserId = whitePlayerId;
-         suspiciousReason = 'Heuristic: Abnormal move timing consistency (95% correlation)';
+        // Ensure we have a baseline
+        if (user.gamesAnalyzed >= 5) {
+          const expectedAccuracy = user.averageCaps;
+          const deviation = currentAccuracy - expectedAccuracy;
+
+          // Flag if accuracy is > 95% AND it's a massive deviation from their historical average
+          if (currentAccuracy >= 95 && deviation >= 25) {
+            const reason = `Heuristic: Abnormal CAPS accuracy (${currentAccuracy}%). Historical average is ${expectedAccuracy.toFixed(1)}%.`;
+            
+            await this.prisma.user.update({
+              where: { id: userId },
+              data: { 
+                isFlaggedForCheating: true,
+                flaggedReason: reason
+              },
+            });
+            this.logger.warn(`Suspicious activity detected in game ${gameId} for user ${userId}. Reason: ${reason}`);
+            return userId;
+          }
+        }
+
+        // Update rolling average
+        const newTotalGames = user.gamesAnalyzed + 1;
+        const newAverageCaps = ((user.averageCaps * user.gamesAnalyzed) + currentAccuracy) / newTotalGames;
+
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: {
+            averageCaps: newAverageCaps,
+            gamesAnalyzed: newTotalGames,
+          },
+        });
+
+        return null;
+      };
+
+      let flaggedWhite: string | null = null;
+      let flaggedBlack: string | null = null;
+
+      if (whitePlayerId) {
+        flaggedWhite = await flagUser(whitePlayerId, whiteAccuracy);
       }
+      if (blackPlayerId) {
+        flaggedBlack = await flagUser(blackPlayerId, blackAccuracy);
+      }
+
+      return { 
+        status: 'completed', 
+        flaggedWhite: !!flaggedWhite,
+        flaggedBlack: !!flaggedBlack
+      };
+
+    } catch (err: any) {
+      this.logger.error(`Failed to process anti-cheat for game ${gameId}: ${err.message}`);
+      throw err;
     }
-
-    if (suspiciousUserId) {
-      this.logger.warn(`Suspicious activity detected in game ${gameId} for user ${suspiciousUserId}. Reason: ${suspiciousReason}`);
-      
-      await this.prisma.user.update({
-        where: { id: suspiciousUserId },
-        data: { isFlaggedForCheating: true },
-      });
-
-      // We could also notify moderators via WebSockets or email here
-    }
-
-    return { status: 'completed', flagged: !!suspiciousUserId };
   }
 }

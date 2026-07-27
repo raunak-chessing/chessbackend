@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { SocialGateway } from './social.gateway';
+import { RedisService } from '../redis/redis.service';
+import * as crypto from 'crypto';
 
 @Injectable()
 export class SocialService {
@@ -13,6 +15,7 @@ export class SocialService {
     private readonly prisma: PrismaService,
     @Inject(forwardRef(() => SocialGateway))
     private readonly socialGateway: SocialGateway,
+    private readonly redisService: RedisService,
   ) {}
 
 
@@ -64,25 +67,38 @@ export class SocialService {
     if (requesterId === receiverId)
       throw new BadRequestException('Cannot friend yourself');
 
-    const existing = await this.prisma.friendship.findFirst({
-      where: {
-        OR: [
-          { requesterId, receiverId },
-          { requesterId: receiverId, receiverId: requesterId },
-        ],
-      },
-    });
-
-    if (existing) {
-      throw new BadRequestException('Friendship or request already exists');
+    const [min, max] = requesterId < receiverId ? [requesterId, receiverId] : [receiverId, requesterId];
+    const lockKey = `friend_req:${min}:${max}`;
+    
+    // Acquire simple Redis lock
+    const locked = await this.redisService.getClient().set(lockKey, '1', 'EX', 5, 'NX');
+    if (!locked) {
+      throw new BadRequestException('Friendship request already in progress');
     }
 
-    const newReq = await this.prisma.friendship.create({
-      data: { requesterId, receiverId, status: 'PENDING' },
-    });
+    try {
+      const existing = await this.prisma.friendship.findFirst({
+        where: {
+          OR: [
+            { requesterId, receiverId },
+            { requesterId: receiverId, receiverId: requesterId },
+          ],
+        },
+      });
 
-    this.socialGateway.notifyUser(receiverId, 'friendRequestReceived', newReq);
-    return newReq;
+      if (existing) {
+        throw new BadRequestException('Friendship or request already exists');
+      }
+
+      const newReq = await this.prisma.friendship.create({
+        data: { requesterId, receiverId, status: 'PENDING' },
+      });
+
+      this.socialGateway.notifyUser(receiverId, 'friendRequestReceived', newReq);
+      return newReq;
+    } finally {
+      await this.redisService.getClient().del(lockKey);
+    }
   }
 
   async acceptFriendRequest(userId: string, friendshipId: string) {
@@ -175,33 +191,35 @@ export class SocialService {
       whitePlayerId = challenge.receiverId;
       blackPlayerId = challenge.senderId;
     } else if (challenge.colorPref === 'random') {
-      if (Math.random() > 0.5) {
+      // Secure random choice
+      if (crypto.randomBytes(1)[0] > 127) {
         whitePlayerId = challenge.receiverId;
         blackPlayerId = challenge.senderId;
       }
     }
 
-
-    const game = await this.prisma.game.create({
-      data: {
-        whitePlayerId,
-        blackPlayerId,
-        timeControl: challenge.timeControl,
-        timeControlCategory: 'LIVE',
-        status: 'IN_PROGRESS',
-      },
+    // Publish to Go Gameserver via Redis (Split-Brain Fix)
+    const payload = JSON.stringify({
+      type: 'create_match',
+      challengeId,
+      whitePlayerId,
+      blackPlayerId,
+      timeControl: challenge.timeControl,
+      gameType: 'LIVE',
     });
+    
+    await this.redisService.getClient().publish('gameserver:events', payload);
 
     this.socialGateway.notifyUser(challenge.senderId, 'challengeAccepted', {
       challengeId,
-      gameId: game.id,
+      message: 'Game creation requested',
     });
     this.socialGateway.notifyUser(challenge.receiverId, 'challengeAccepted', {
       challengeId,
-      gameId: game.id,
+      message: 'Game creation requested',
     });
 
-    return game;
+    return { success: true, message: 'Game creation requested to Go Gameserver' };
   }
 
   async declineChallenge(userId: string, challengeId: string) {

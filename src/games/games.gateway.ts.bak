@@ -23,6 +23,7 @@ import { FactionsService } from '../factions/factions.service';
 import { AntiCheatProducer } from '../anti-cheat/anti-cheat.producer';
 import { OverworldService } from '../overworld/overworld.service';
 import { OverworldGateway } from '../overworld/overworld.gateway';
+import { WagerService } from '../social/wager.service';
 import type { AuthenticatedSocket } from '../types';
 import { Chess } from 'chess.js';
 import {
@@ -176,6 +177,7 @@ export class GamesGateway implements OnGatewayConnection, OnGatewayDisconnect {
     private readonly antiCheatProducer: AntiCheatProducer,
     private readonly overworldService: OverworldService,
     private readonly overworldGateway: OverworldGateway,
+    private readonly wagerService: WagerService,
   ) {
     this.matchmakingService.registerMatchCallback((match) => {
       this.handleMatchFound(match);
@@ -251,24 +253,15 @@ export class GamesGateway implements OnGatewayConnection, OnGatewayDisconnect {
       data: { gold: { increment: 2 } },
     }).catch(() => {});
 
-    // 2. Handle Hex Flipping
+    // 2. Handle Hex Siege
     if (targetHexId) {
       const user = await this.prisma.user.findUnique({
         where: { id: winnerUserId },
         select: { factionId: true },
       });
       if (user && user.factionId) {
-        const updatedHex = await this.prisma.worldHex.update({
-          where: { id: targetHexId },
-          data: { controllingFactionId: user.factionId },
-          include: { controllingFaction: true, structures: true },
-        });
-        
-        // Update Redis Cache
-        await this.overworldService.cacheWorldMap();
-        
-        // Broadcast via OverworldGateway
-        this.overworldGateway.server.emit('hexUpdated', updatedHex);
+        // Apply 500 damage per win
+        await this.overworldService.applySiegeDamage(targetHexId, user.factionId, 500);
       }
     }
   }
@@ -298,6 +291,9 @@ export class GamesGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const wFields = getPlayerRatingField(match.gameType);
     const bFields = getPlayerRatingField(match.gameType);
+    
+    const wSocket = whiteSocket as AuthenticatedSocket;
+    const bSocket = blackSocket as AuthenticatedSocket;
 
     await this.gamesService.createRoom(
       match.roomName,
@@ -340,7 +336,7 @@ export class GamesGateway implements OnGatewayConnection, OnGatewayDisconnect {
           id: socket?.data?.user?.id ?? socketId,
           name: socket?.data?.user?.name ?? `Guest-${socketId.slice(0, 5)}`,
           rating: socket?.data?.user
-            ? (socket.data.user[fields.rating] ?? 1200)
+            ? ((socket.data.user[fields.rating] as number) ?? 1200)
             : 1200,
         };
       };
@@ -354,6 +350,30 @@ export class GamesGateway implements OnGatewayConnection, OnGatewayDisconnect {
         whiteTimeLeftMs: room.whiteTimeLeftMs,
         blackTimeLeftMs: room.blackTimeLeftMs,
       });
+
+      // The Colosseum: Live Wager Event for Legend tier matches
+      const wProfile = getProfile(room.whitePlayerId);
+      const bProfile = getProfile(room.blackPlayerId);
+
+      if (wProfile.rating >= 2000 && bProfile.rating >= 2000) {
+        // Create Wager Pool
+        const odds = this.wagerService.createWagerPool(
+          match.roomName,
+          wProfile.id,
+          bProfile.id,
+          wProfile.rating as number,
+          bProfile.rating as number
+        );
+
+        // Broadcast to all clients
+        this.server.emit('GlobalSpectatorEvent', {
+          gameId: match.roomName,
+          white: wProfile,
+          black: bProfile,
+          odds,
+          message: 'The Colosseum has opened! A battle of Legends has begun.'
+        });
+      }
     }
   }
 
