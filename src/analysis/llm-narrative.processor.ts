@@ -104,11 +104,7 @@ Write a 3-paragraph epic fantasy narrative describing this battle.`;
     await this.prisma.game.update({
       where: { id: gameId },
       data: { 
-        analysis: {
-          update: {
-            narrative: narrative
-          }
-        } as any 
+        analysis: { narrative }
       }
     }).catch(e => this.logger.error(`Failed to save narrative to game ${gameId}`, e));
   }

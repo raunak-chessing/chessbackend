@@ -1,18 +1,29 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
 import Stripe from 'stripe';
 import { ConfigService } from '@nestjs/config';
 
 @Injectable()
 export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
   private stripe: Stripe;
+  private redisClient: ReturnType<RedisService['getClient']>;
 
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
+    private redisService: RedisService,
   ) {
-    const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY') || 'sk_test_dummy';
-    this.stripe = new Stripe(secretKey, {
+    this.redisClient = this.redisService.getClient();
+
+    const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
+    const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET');
+    if (this.configService.get<string>('NODE_ENV') === 'production' && (!secretKey || !webhookSecret)) {
+      throw new Error('STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET must be set in production');
+    }
+
+    this.stripe = new Stripe(secretKey || 'sk_test_dummy', {
       apiVersion: '2023-10-16' as any, // Using latest or fallback
     });
   }
@@ -61,7 +72,7 @@ export class PaymentsService {
     return { url: session.url };
   }
 
-  async handleWebhookEvent(payload: string, signature: string) {
+  async handleWebhookEvent(payload: Buffer, signature: string) {
     const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET') || 'whsec_dummy';
     
     let event: Stripe.Event;
@@ -70,6 +81,18 @@ export class PaymentsService {
       event = this.stripe.webhooks.constructEvent(payload, signature, webhookSecret);
     } catch (err: any) {
       throw new InternalServerErrorException(`Webhook Error: ${err.message}`);
+    }
+
+    const alreadyProcessed = await this.redisClient.set(
+      `stripe_event:${event.id}`,
+      '1',
+      'EX',
+      86400,
+      'NX',
+    );
+    if (!alreadyProcessed) {
+      this.logger.log(`Skipping already-processed Stripe event ${event.id}`);
+      return { received: true };
     }
 
     switch (event.type) {
@@ -98,7 +121,7 @@ export class PaymentsService {
         break;
 
       default:
-        console.log(`Unhandled event type ${event.type}`);
+        this.logger.log(`Unhandled event type ${event.type}`);
     }
 
     return { received: true };

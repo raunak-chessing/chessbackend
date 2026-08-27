@@ -16,4 +16,9 @@ export class FactionsController {
     if (!req.user || !req.user.id) throw new UnauthorizedException();
     return this.factionsService.joinFaction(req.user.id, factionId);
   }
+
+  @Get('divisions')
+  async getDivisions() {
+    return this.factionsService.getCurrentDivisions();
+  }
 }

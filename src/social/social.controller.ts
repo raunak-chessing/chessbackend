@@ -9,7 +9,7 @@ import {
   Delete,
 } from '@nestjs/common';
 import { SocialService } from './social.service';
-import { SendChallengeDto } from './dto/social.dto';
+import { SendChallengeDto, ReportUserDto } from './dto/social.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 @Controller('api/social')
@@ -94,5 +94,27 @@ export class SocialController {
   ) {
     if (!userId) throw new UnauthorizedException('Not logged in');
     return this.socialService.declineChallenge(userId, id);
+  }
+
+  @Post('block/:id')
+  async blockUser(@CurrentUser() userId: string, @Param('id') id: string) {
+    if (!userId) throw new UnauthorizedException('Not logged in');
+    return this.socialService.blockUser(userId, id);
+  }
+
+  @Delete('block/:id')
+  async unblockUser(@CurrentUser() userId: string, @Param('id') id: string) {
+    if (!userId) throw new UnauthorizedException('Not logged in');
+    return this.socialService.unblockUser(userId, id);
+  }
+
+  @Post('report/:id')
+  async reportUser(
+    @CurrentUser() userId: string,
+    @Param('id') id: string,
+    @Body() body: ReportUserDto,
+  ) {
+    if (!userId) throw new UnauthorizedException('Not logged in');
+    return this.socialService.reportUser(userId, id, body.reason, body.description);
   }
 }

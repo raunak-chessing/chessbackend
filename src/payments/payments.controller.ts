@@ -1,4 +1,6 @@
 import { Controller, Post, Req, Res, Headers, UnauthorizedException, HttpCode, HttpStatus } from '@nestjs/common';
+import type { RawBodyRequest } from '@nestjs/common';
+import { Request } from 'express';
 import { PaymentsService } from './payments.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
@@ -16,11 +18,11 @@ export class PaymentsController {
   @HttpCode(HttpStatus.OK)
   async handleWebhook(
     @Headers('stripe-signature') signature: string,
-    @Req() req: any,
+    @Req() req: RawBodyRequest<Request>,
   ) {
-    // Note: To verify the Stripe webhook signature properly, 
-    // the raw request body is needed. 
-    // You may need to configure NestJS to parse raw body for this specific route.
-    return this.paymentsService.handleWebhookEvent(req.rawBody || req.body, signature);
+    if (!req.rawBody) {
+      throw new UnauthorizedException('Missing raw request body for webhook signature verification');
+    }
+    return this.paymentsService.handleWebhookEvent(req.rawBody, signature);
   }
 }

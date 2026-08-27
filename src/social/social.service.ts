@@ -1,23 +1,16 @@
-import {
-  Injectable,
-  BadRequestException,
-  forwardRef,
-  Inject,
-} from '@nestjs/common';
+import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { SocialGateway } from './social.gateway';
 import { RedisService } from '../redis/redis.service';
+import { SocialEventService } from './social-event.service';
 import * as crypto from 'crypto';
 
 @Injectable()
 export class SocialService {
   constructor(
     private readonly prisma: PrismaService,
-    @Inject(forwardRef(() => SocialGateway))
-    private readonly socialGateway: SocialGateway,
     private readonly redisService: RedisService,
+    private readonly socialEventService: SocialEventService,
   ) {}
-
 
   async getFriends(userId: string) {
     const friendships = await this.prisma.friendship.findMany({
@@ -35,10 +28,23 @@ export class SocialService {
       },
     });
 
-    return friendships.map((f) => {
+    const mappedFriends = friendships.map((f) => {
       const isRequester = f.requesterId === userId;
       return isRequester ? f.receiver : f.requester;
     });
+
+    const redis = this.redisService.getClient();
+    const result = await Promise.all(
+      mappedFriends.map(async (friend) => {
+        const count = await redis.get(`presence:${friend.id}`);
+        return {
+          ...friend,
+          isOnline: count ? parseInt(count) > 0 : false,
+        };
+      }),
+    );
+
+    return result;
   }
 
   async getPendingRequests(userId: string) {
@@ -94,7 +100,7 @@ export class SocialService {
         data: { requesterId, receiverId, status: 'PENDING' },
       });
 
-      this.socialGateway.notifyUser(receiverId, 'friendRequestReceived', newReq);
+      await this.socialEventService.publish(receiverId, 'friendRequestReceived', newReq);
       return newReq;
     } finally {
       await this.redisService.getClient().del(lockKey);
@@ -160,11 +166,7 @@ export class SocialService {
       },
     });
 
-    this.socialGateway.notifyUser(
-      receiverId,
-      'challengeReceived',
-      newChallenge,
-    );
+    await this.socialEventService.publish(receiverId, 'challengeReceived', newChallenge);
     return newChallenge;
   }
 
@@ -177,12 +179,6 @@ export class SocialService {
       throw new BadRequestException('Unauthorized');
     if (challenge.status !== 'PENDING')
       throw new BadRequestException('Challenge no longer pending');
-
-    await this.prisma.challenge.update({
-      where: { id: challengeId },
-      data: { status: 'ACCEPTED' },
-    });
-
 
     let whitePlayerId = challenge.senderId;
     let blackPlayerId = challenge.receiverId;
@@ -198,28 +194,45 @@ export class SocialService {
       }
     }
 
-    // Publish to Go Gameserver via Redis (Split-Brain Fix)
-    const payload = JSON.stringify({
-      type: 'create_match',
-      challengeId,
-      whitePlayerId,
-      blackPlayerId,
-      timeControl: challenge.timeControl,
-      gameType: 'LIVE',
-    });
-    
-    await this.redisService.getClient().publish('gameserver:events', payload);
+    const gameId = crypto.randomUUID();
+    const timeLimits = challenge.timeControl.split('|');
+    const baseTimeMs = parseInt(timeLimits[0] || '10', 10) * 60 * 1000;
+    const incrementMs = parseInt(timeLimits[1] || '0', 10) * 1000;
 
-    this.socialGateway.notifyUser(challenge.senderId, 'challengeAccepted', {
+    await this.prisma.$transaction([
+      this.prisma.challenge.update({
+        where: { id: challengeId },
+        data: { status: 'ACCEPTED' },
+      }),
+      this.prisma.game.create({
+        data: {
+          id: gameId,
+          whitePlayerId,
+          blackPlayerId,
+          timeControl: challenge.timeControl,
+          gameType: 'LIVE',
+          status: 'IN_PROGRESS',
+          fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1',
+          whiteTimeMs: baseTimeMs,
+          blackTimeMs: baseTimeMs,
+          incrementMs: incrementMs,
+          lastMoveTime: new Date()
+        }
+      }),
+    ]);
+
+    await this.socialEventService.publish(challenge.senderId, 'challengeAccepted', {
       challengeId,
-      message: 'Game creation requested',
+      gameId,
+      message: 'Game created!',
     });
-    this.socialGateway.notifyUser(challenge.receiverId, 'challengeAccepted', {
+    await this.socialEventService.publish(challenge.receiverId, 'challengeAccepted', {
       challengeId,
-      message: 'Game creation requested',
+      gameId,
+      message: 'Game created!',
     });
 
-    return { success: true, message: 'Game creation requested to Go Gameserver' };
+    return { gameId };
   }
 
   async declineChallenge(userId: string, challengeId: string) {
@@ -233,6 +246,52 @@ export class SocialService {
     return this.prisma.challenge.update({
       where: { id: challengeId },
       data: { status: 'DECLINED' },
+    });
+  }
+
+  async blockUser(blockerId: string, blockedId: string) {
+    if (blockerId === blockedId) throw new BadRequestException('Cannot block yourself');
+    
+    await this.prisma.friendship.deleteMany({
+      where: {
+        OR: [
+          { requesterId: blockerId, receiverId: blockedId },
+          { requesterId: blockedId, receiverId: blockerId }
+        ]
+      }
+    });
+
+    return this.prisma.block.upsert({
+      where: {
+        blockerId_blockedId: {
+          blockerId,
+          blockedId
+        }
+      },
+      create: {
+        blockerId,
+        blockedId
+      },
+      update: {}
+    });
+  }
+
+  async unblockUser(blockerId: string, blockedId: string) {
+    return this.prisma.block.deleteMany({
+      where: { blockerId, blockedId }
+    });
+  }
+
+  async reportUser(reporterId: string, reportedId: string, reason: string, description?: string) {
+    if (reporterId === reportedId) throw new BadRequestException('Cannot report yourself');
+    
+    return this.prisma.report.create({
+      data: {
+        reporterId,
+        reportedId,
+        reason,
+        description
+      }
     });
   }
 }

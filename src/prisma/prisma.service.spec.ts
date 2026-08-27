@@ -1,35 +1,36 @@
 import { PrismaService } from './prisma.service';
+import pg from 'pg';
 
-const mockConnect = jest.fn().mockResolvedValue(undefined);
-
-const mockDisconnect = jest.fn().mockResolvedValue(undefined);
-
-jest.mock('./prisma.service', () => {
+jest.mock('pg', () => {
+  const mPool = {
+    end: jest.fn().mockResolvedValue(undefined),
+  };
   return {
-    PrismaService: jest.fn().mockImplementation(() => ({
-      $connect: mockConnect,
+    Pool: jest.fn(() => mPool),
+  };
+});
 
-      $disconnect: mockDisconnect,
+jest.mock('@prisma/adapter-pg', () => {
+  return {
+    PrismaPg: jest.fn(),
+  };
+});
 
-      onModuleInit: async function () {
-        /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call */
-        await this.$connect();
-      },
-
-      onModuleDestroy: async function () {
-        /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call */
-        await this.$disconnect();
-      },
-    })),
+jest.mock('@prisma/client', () => {
+  class MockPrismaClient {
+    $connect = jest.fn().mockResolvedValue(undefined);
+    $disconnect = jest.fn().mockResolvedValue(undefined);
+  }
+  return {
+    PrismaClient: MockPrismaClient,
   };
 });
 
 describe('PrismaService', () => {
-  let service: InstanceType<typeof PrismaService>;
+  let service: PrismaService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-
     service = new PrismaService();
   });
 
@@ -37,23 +38,17 @@ describe('PrismaService', () => {
     expect(service).toBeDefined();
   });
 
-  it('should expose onModuleInit', () => {
-    expect(typeof service.onModuleInit).toBe('function');
-  });
-
-  it('should expose onModuleDestroy', () => {
-    expect(typeof service.onModuleDestroy).toBe('function');
-  });
-
   it('onModuleInit should call $connect', async () => {
     await service.onModuleInit();
-
-    expect(mockConnect).toHaveBeenCalledTimes(1);
+    expect(service.$connect).toHaveBeenCalledTimes(1);
   });
 
-  it('onModuleDestroy should call $disconnect', async () => {
+  it('onModuleDestroy should call $disconnect and pool.end', async () => {
     await service.onModuleDestroy();
-
-    expect(mockDisconnect).toHaveBeenCalledTimes(1);
+    expect(service.$disconnect).toHaveBeenCalledTimes(1);
+    // Since service['pool'] is private, we can access the mocked pool's end method directly 
+    // by creating a new Pool instance since it returns the same mock object properties in our basic mock
+    const pool = new pg.Pool();
+    expect(pool.end).toHaveBeenCalledTimes(1);
   });
 });

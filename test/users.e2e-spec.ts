@@ -55,12 +55,12 @@ describe('UsersService (e2e)', () => {
       expect(user).toBeNull();
     });
 
-    it('should persist the correct initial rating of 1200', async () => {
+    it('should persist the correct initial rating of 100', async () => {
       const user = await prisma.user.findUnique({
         where: { email: seedEmail },
       });
 
-      expect(user?.rating).toBe(1200);
+      expect(user?.rating).toBe(100);
     });
   });
 });

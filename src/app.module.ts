@@ -5,7 +5,6 @@ import { BullModule } from '@nestjs/bullmq';
 import { AuthModule } from '@thallesp/nestjs-better-auth';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { GamesModule } from './games/games.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { UsersModule } from './users/users.module';
 import { AcademyModule } from './academy/academy.module';
@@ -30,12 +29,23 @@ import { PaymentsModule } from './payments/payments.module';
 import { OverworldModule } from './overworld/overworld.module';
 import { OpeningsModule } from './openings/openings.module';
 import { VoteChessModule } from './vote-chess/vote-chess.module';
+import { InventoryModule } from './inventory/inventory.module';
+import { ShopModule } from './shop/shop.module';
+import { AdminModule } from './admin/admin.module';
+import { envValidationSchema } from './config/env.validation';
+import { RedisModule } from './redis/redis.module';
+import { RedisService } from './redis/redis.service';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validationSchema: envValidationSchema,
+      validationOptions: {
+        allowUnknown: true,
+        abortEarly: false,
+      },
     }),
     BullModule.forRootAsync({
       imports: [ConfigModule],
@@ -54,17 +64,17 @@ import { VoteChessModule } from './vote-chess/vote-chess.module';
     }]),
     MailModule,
     AuthModule.forRootAsync({
-      imports: [PrismaModule, MailModule, ConfigModule],
-      inject: [PrismaService, MailService, ConfigService],
+      imports: [PrismaModule, MailModule, ConfigModule, RedisModule],
+      inject: [PrismaService, MailService, ConfigService, RedisService],
       useFactory: (
         prisma: PrismaService,
         mailService: MailService,
         config: ConfigService,
+        redisService: RedisService,
       ) => ({
-        auth: getAuth(prisma, mailService, config),
+        auth: getAuth(prisma, mailService, config, redisService),
       }),
     }),
-    GamesModule,
     PrismaModule,
     UsersModule,
     AcademyModule,
@@ -84,6 +94,9 @@ import { VoteChessModule } from './vote-chess/vote-chess.module';
     OverworldModule,
     OpeningsModule,
     VoteChessModule,
+    InventoryModule,
+    ShopModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [

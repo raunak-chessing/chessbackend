@@ -9,8 +9,11 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { OverworldService } from './overworld.service';
-import { UsePipes, ValidationPipe, UseFilters } from '@nestjs/common';
+import { UsePipes, ValidationPipe, UseFilters, Logger } from '@nestjs/common';
 import { IsNumber, IsNotEmpty } from 'class-validator';
+import { PrismaService } from '../prisma/prisma.service';
+import { RedisService } from '../redis/redis.service';
+import { checkRateLimit } from '../common/rate-limit.util';
 
 class MoveAvatarDto {
   @IsNumber()
@@ -24,7 +27,7 @@ class MoveAvatarDto {
 
 @WebSocketGateway({
   cors: {
-    origin: '*', // Should match your main config
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
     credentials: true,
   },
   namespace: '/overworld',
@@ -34,26 +37,50 @@ export class OverworldGateway implements OnGatewayConnection, OnGatewayDisconnec
   @WebSocketServer()
   server: Server;
 
-  constructor(private readonly overworldService: OverworldService) {}
+  private readonly logger = new Logger(OverworldGateway.name);
 
-  handleConnection(client: Socket) {
-    // In a real scenario, extract userId from JWT token via handshake
-    // For now we assume the client sends an auth payload or registers later
-    console.log(`Client connected to Overworld: ${client.id}`);
+  constructor(
+    private readonly overworldService: OverworldService,
+    private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
+  ) {}
+
+  async handleConnection(client: Socket) {
+    let sessionToken = (client.handshake.auth as Record<string, unknown>)
+      ?.token as string;
+    if (!sessionToken && client.handshake.headers.cookie) {
+      const match = client.handshake.headers.cookie.match(
+        /(?:__Secure-)?better-auth\.session_token=([^;]+)/,
+      );
+      if (match) {
+        sessionToken = match[1];
+      }
+    }
+
+    if (!sessionToken) return;
+
+    try {
+      const session = await this.prisma.session.findUnique({
+        where: { token: sessionToken },
+        include: { user: true },
+      });
+
+      if (session && session.expiresAt > new Date()) {
+        client.data.userId = session.user.id;
+      }
+    } catch (err: any) {
+      this.logger.error(`Error in handleConnection: ${err.message}`);
+    }
   }
 
-  handleDisconnect(client: Socket) {
-    console.log(`Client disconnected from Overworld: ${client.id}`);
-  }
+  handleDisconnect(client: Socket) {}
 
   @SubscribeMessage('joinOverworld')
-  async handleJoin(
-    @MessageBody() data: { userId: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    client.data.userId = data.userId;
-    // Broadcast to others that a player spawned
-    const pos = await this.overworldService.getPlayerPosition(data.userId) || { q: 0, r: 0 };
+  async handleJoin(@ConnectedSocket() client: Socket) {
+    const userId = client.data.userId;
+    if (!userId) return;
+
+    const pos = await this.overworldService.getPlayerPosition(userId) || { q: 0, r: 0 };
     client.emit('spawned', pos);
   }
 
@@ -65,8 +92,11 @@ export class OverworldGateway implements OnGatewayConnection, OnGatewayDisconnec
     const userId = client.data.userId;
     if (!userId) return;
 
+    const withinLimit = await checkRateLimit(this.redisService.getClient(), `ratelimit:avatar_move:${userId}`, 20, 5);
+    if (!withinLimit) return;
+
     await this.overworldService.setPlayerPosition(userId, data.q, data.r);
-    
+
     // Broadcast movement to all other players in the overworld
     this.server.emit('avatarMoved', { userId, q: data.q, r: data.r });
   }

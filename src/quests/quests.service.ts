@@ -42,8 +42,14 @@ export class QuestsService {
       });
       const elo = user?.rating || 1200;
 
-      // Dynamic generation based on Elo
-      const generated: any[] = [];
+      interface GeneratedQuest {
+        id: string;
+        target: number;
+        chainId?: string;
+        loreUnlockId?: string;
+      }
+
+      const generated: GeneratedQuest[] = [];
       if (elo < 1000) {
         generated.push({ id: 'SOLVE_PUZZLES_BASIC', target: 5, chainId: 'BEGINNER_TACTICS' });
         generated.push({ id: 'WIN_GAMES_RAPID', target: 2 });

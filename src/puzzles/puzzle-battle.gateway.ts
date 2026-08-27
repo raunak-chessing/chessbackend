@@ -11,7 +11,10 @@ import { Server, Socket } from 'socket.io';
 import { PrismaService } from '../prisma/prisma.service';
 import { QuestsService } from '../quests/quests.service';
 import { FactionsService } from '../factions/factions.service';
+import { RedisService } from '../redis/redis.service';
+import { checkRateLimit } from '../common/rate-limit.util';
 import type { AuthenticatedSocket } from '../types';
+import type { Puzzle } from '@prisma/client';
 
 interface BattlePlayer {
   id: string;
@@ -24,13 +27,13 @@ interface BattlePlayer {
 interface BattleRoom {
   id: string;
   players: Record<string, BattlePlayer>;
-  puzzles: any[];
+  puzzles: Puzzle[];
   status: 'IN_PROGRESS' | 'FINISHED';
   roundIndex: number;
 }
 
 @WebSocketGateway({
-  cors: { origin: '*' },
+  cors: { origin: process.env.FRONTEND_URL || 'http://localhost:3000', credentials: true },
   namespace: '/puzzle-battle',
 })
 export class PuzzleBattleGateway
@@ -46,6 +49,7 @@ export class PuzzleBattleGateway
     private readonly prisma: PrismaService,
     private readonly questsService: QuestsService,
     private readonly factionsService: FactionsService,
+    private readonly redisService: RedisService,
   ) {}
 
   async handleConnection(client: AuthenticatedSocket) {
@@ -54,7 +58,7 @@ export class PuzzleBattleGateway
 
     if (!sessionToken && client.handshake.headers.cookie) {
       const match = client.handshake.headers.cookie.match(
-        /better-auth\.session-token=([^;]+)/,
+        /(?:__Secure-)?better-auth\.session_token=([^;]+)/,
       );
       if (match) {
         sessionToken = match[1];
@@ -94,15 +98,22 @@ export class PuzzleBattleGateway
           room.status = 'FINISHED';
           this.server.to(roomId).emit('opponentDisconnected');
         }
+        delete this.rooms[roomId];
       }
     }
   }
 
   @SubscribeMessage('joinQueue')
   async handleJoinQueue(@ConnectedSocket() client: AuthenticatedSocket) {
+    const user = client.data.user as Record<string, unknown> | undefined;
+    if (user?.isFlaggedForCheating) {
+      client.emit('queueError', { message: 'Puzzle battles are disabled for this account' });
+      return;
+    }
+
     const userId = client.data.user?.id || client.id;
     const name = client.data.user?.name || `Guest-${client.id.slice(0, 5)}`;
-    const rating = (client.data.user as any)?.ratingPuzzle || 1200;
+    const rating = typeof user?.ratingPuzzle === 'number' ? user.ratingPuzzle : 1200;
 
     // Prevent double joining
     this.queue = this.queue.filter((p) => p.id !== userId);
@@ -178,13 +189,16 @@ export class PuzzleBattleGateway
   }
 
   @SubscribeMessage('makeMove')
-  handleMakeMove(
+  async handleMakeMove(
     @MessageBody()
     data: { roomId: string; source: string; target: string; fen: string },
     @ConnectedSocket() client: Socket,
   ) {
+    const withinLimit = await checkRateLimit(this.redisService.getClient(), `ratelimit:puzzle_move:${client.id}`, 20, 5);
+    if (!withinLimit) return;
+
     const room = this.rooms[data.roomId];
-    if (room && room.status === 'IN_PROGRESS') {
+    if (room && room.status === 'IN_PROGRESS' && room.players[client.id]) {
       client.to(data.roomId).emit('opponentMove', {
         source: data.source,
         target: data.target,
@@ -249,12 +263,15 @@ export class PuzzleBattleGateway
   }
 
   @SubscribeMessage('sendEmote')
-  handleSendEmote(
+  async handleSendEmote(
     @MessageBody() data: { roomId: string; emoji: string },
     @ConnectedSocket() client: Socket,
   ) {
+    const withinLimit = await checkRateLimit(this.redisService.getClient(), `ratelimit:puzzle_emote:${client.id}`, 10, 10);
+    if (!withinLimit) return;
+
     const room = this.rooms[data.roomId];
-    if (room && room.status === 'IN_PROGRESS') {
+    if (room && room.status === 'IN_PROGRESS' && room.players[client.id]) {
       client.to(data.roomId).emit('opponentEmote', {
         emoji: data.emoji,
       });

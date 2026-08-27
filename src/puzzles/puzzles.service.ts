@@ -1,25 +1,19 @@
-import { Injectable, NotFoundException, BadRequestException, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { QuestsService } from '../quests/quests.service';
-import Redis from 'ioredis';
+import { RedisService } from '../redis/redis.service';
+import type Redis from 'ioredis';
 
 @Injectable()
-export class PuzzlesService implements OnModuleDestroy {
-  private redisClient: Redis;
+export class PuzzlesService {
+  private readonly redisClient: Redis;
 
   constructor(
     private prisma: PrismaService,
     private questsService: QuestsService,
+    private redisService: RedisService,
   ) {
-    this.redisClient = new Redis({
-      host: process.env.REDIS_HOST || 'localhost',
-      port: Number(process.env.REDIS_PORT) || 6379,
-      db: Number(process.env.PUZZLES_REDIS_DB) || 2,
-    });
-  }
-
-  onModuleDestroy() {
-    this.redisClient.disconnect();
+    this.redisClient = this.redisService.getClient();
   }
 
   async getRatedPuzzle(userId: string) {

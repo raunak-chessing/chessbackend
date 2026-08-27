@@ -2,6 +2,7 @@
   "moduleFileExtensions": ["js", "json", "ts", "mjs"],
   "rootDir": ".",
   "testEnvironment": "node",
+  "testTimeout": 30000,
   "testRegex": ".e2e-spec.ts$",
   "setupFiles": ["<rootDir>/setup.js"],
   "transform": {

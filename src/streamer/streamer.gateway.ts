@@ -8,39 +8,72 @@ import {
   OnGatewayDisconnect,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import type { AuthenticatedSocket } from '../types';
+import { RedisService } from '../redis/redis.service';
 
 @WebSocketGateway({
-  cors: { origin: 'http://localhost:3000', credentials: true },
+  cors: { origin: process.env.FRONTEND_URL || 'http://localhost:3000', credentials: true },
 })
-export class StreamerGateway implements OnGatewayConnection, OnGatewayDisconnect {
+@Injectable()
+export class StreamerGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy {
   @WebSocketServer()
   server: Server;
 
   private readonly logger = new Logger(StreamerGateway.name);
 
-  // Map of streamerId -> (square -> voteCount)
-  private heatmaps = new Map<string, Record<string, number>>();
   private updateInterval: NodeJS.Timeout;
 
-  constructor() {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
+  ) {
     // Batch broadcast heatmap updates every 1 second
     this.updateInterval = setInterval(() => {
       this.broadcastHeatmaps();
     }, 1000);
   }
 
-  handleConnection(client: Socket) {
-    this.logger.debug(`Streamer Client connected: ${client.id}`);
+  async handleConnection(client: Socket) {
+    let sessionToken = (client.handshake.auth as Record<string, unknown>)?.token as string;
+    if (!sessionToken && client.handshake.headers.cookie) {
+      const match = client.handshake.headers.cookie.match(/better-auth\.session[-_]token=([^;]+)/);
+      if (match) {
+        sessionToken = match[1];
+      }
+    }
+
+    if (sessionToken) {
+      try {
+        const session = await this.prisma.session.findUnique({
+          where: { token: sessionToken },
+          include: { user: true },
+        });
+
+        if (session && session.expiresAt > new Date()) {
+          (client as AuthenticatedSocket).data.user = session.user;
+          this.logger.debug(`Streamer Client authenticated: ${session.user.id}`);
+          return;
+        }
+      } catch (err: any) {
+        this.logger.error(`Error in handleConnection: ${err.message}`);
+      }
+    }
+    this.logger.debug(`Streamer Client rejected (unauthenticated): ${client.id}`);
+    client.disconnect();
   }
 
   handleDisconnect(client: Socket) {
     this.logger.debug(`Streamer Client disconnected: ${client.id}`);
   }
 
+  onModuleDestroy() {
+    clearInterval(this.updateInterval);
+  }
+
   @SubscribeMessage('streamer:join')
-  handleJoinStream(
+  async handleJoin(
     @MessageBody('streamerId') streamerId: string,
     @ConnectedSocket() client: AuthenticatedSocket,
   ) {
@@ -48,55 +81,81 @@ export class StreamerGateway implements OnGatewayConnection, OnGatewayDisconnect
     const room = `stream:${streamerId}`;
     client.join(room);
     
-    // Initialize heatmap map if it doesn't exist
-    if (!this.heatmaps.has(streamerId)) {
-      this.heatmaps.set(streamerId, {});
-    }
+    // Add streamer to active streamers set
+    const redis = this.redisService.getClient();
+    await redis.sadd('active_streamers', streamerId);
 
     // Send current heatmap state to the joining user immediately
-    const currentHeatmap = this.heatmaps.get(streamerId) || {};
+    const heatmapData = await redis.hgetall(`streamer_heatmap:${streamerId}`);
+    const currentHeatmap: Record<string, number> = {};
+    for (const [sq, val] of Object.entries(heatmapData)) {
+      currentHeatmap[sq] = parseInt(val, 10);
+    }
     client.emit('streamer:heatmapUpdate', { streamerId, heatmap: currentHeatmap });
 
     return { status: 'ok', room };
   }
 
   @SubscribeMessage('streamer:voteMove')
-  handleVoteMove(
+  async handleVoteMove(
     @MessageBody('streamerId') streamerId: string,
     @MessageBody('square') square: string, // e.g. "e4"
     @ConnectedSocket() client: AuthenticatedSocket,
   ) {
     if (!streamerId || !square) return;
 
-    if (!this.heatmaps.has(streamerId)) {
-      this.heatmaps.set(streamerId, {});
-    }
-
-    const map = this.heatmaps.get(streamerId)!;
-    map[square] = (map[square] || 0) + 1;
+    const redis = this.redisService.getClient();
+    await redis.sadd('active_streamers', streamerId);
+    await redis.hincrby(`streamer_heatmap:${streamerId}`, square, 1);
   }
 
-  private broadcastHeatmaps() {
-    for (const [streamerId, heatmap] of this.heatmaps.entries()) {
-      const squares = Object.keys(heatmap);
-      if (squares.length > 0) {
-        // Broadcast the current aggregated heatmap to the room
-        this.server.to(`stream:${streamerId}`).emit('streamer:heatmapUpdate', {
-          streamerId,
-          heatmap,
-        });
+  private async broadcastHeatmaps() {
+    const redis = this.redisService.getClient();
+    const activeStreamers = await redis.smembers('active_streamers');
 
-        // Decay the heatmap slightly to create a dynamic visual effect, 
-        // or just reset it. We'll implement a 50% decay so older votes fade out.
-        const newMap: Record<string, number> = {};
-        for (const sq of squares) {
-          const decayedValue = Math.floor(heatmap[sq] * 0.5);
+    for (const streamerId of activeStreamers) {
+      const room = `stream:${streamerId}`;
+      const sockets = this.server.sockets.adapter.rooms.get(room);
+      
+      if (!sockets || sockets.size === 0) {
+        // No local viewers, but other instances might have viewers.
+        // We can't delete it just because this instance has no viewers.
+        // But if we're broadcasting from every instance, we might broadcast multiple times.
+        // To fix this, only one worker should decay it, but for simplicity, we'll just let Redis pub/sub or local broadcast handle it.
+        // Actually, just fetching and broadcasting locally to our connected viewers is fine.
+        continue;
+      }
+
+      const heatmapData = await redis.hgetall(`streamer_heatmap:${streamerId}`);
+      const heatmap: Record<string, number> = {};
+      let hasVotes = false;
+
+      for (const [sq, val] of Object.entries(heatmapData)) {
+        const count = parseInt(val, 10);
+        if (count > 0) {
+          heatmap[sq] = count;
+          hasVotes = true;
+          
+          // Decay the value
+          const decayedValue = Math.floor(count * 0.5);
           if (decayedValue > 0) {
-            newMap[sq] = decayedValue;
+            await redis.hset(`streamer_heatmap:${streamerId}`, sq, decayedValue);
+          } else {
+            await redis.hdel(`streamer_heatmap:${streamerId}`, sq);
           }
         }
-        this.heatmaps.set(streamerId, newMap);
       }
+
+      if (!hasVotes) {
+        // If empty, clean up
+        await redis.srem('active_streamers', streamerId);
+      }
+
+      // Broadcast the current aggregated heatmap to the local room
+      this.server.to(room).emit('streamer:heatmapUpdate', {
+        streamerId,
+        heatmap,
+      });
     }
   }
 }

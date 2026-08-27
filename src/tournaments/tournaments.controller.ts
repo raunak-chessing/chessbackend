@@ -4,14 +4,14 @@ import {
   Post,
   Param,
   Body,
-  Req,
   UnauthorizedException,
+  UseGuards,
 } from '@nestjs/common';
 import { TournamentsService } from './tournaments.service';
 import { AllowAnonymous } from '@thallesp/nestjs-better-auth';
-import type { AuthenticatedRequest } from '../types';
-import { CreateArenaDto } from './dto/tournaments.dto';
+import { CreateArenaDto, CreateSwissDto } from './dto/tournaments.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { AdminGuard } from '../admin/guards/admin.guard';
 
 @Controller('api/tournaments')
 export class TournamentsController {
@@ -29,6 +29,18 @@ export class TournamentsController {
     return this.tournamentsService.getTournament(id);
   }
 
+  @AllowAnonymous()
+  @Get(':id/standings')
+  async getStandings(@Param('id') id: string) {
+    return this.tournamentsService.getStandings(id);
+  }
+
+  @AllowAnonymous()
+  @Get(':id/pairings/:round')
+  async getPairings(@Param('id') id: string, @Param('round') round: string) {
+    return this.tournamentsService.getPairingsForRound(id, parseInt(round, 10));
+  }
+
   @Post(':id/join')
   async joinTournament(
     @CurrentUser() userId: string,
@@ -39,19 +51,26 @@ export class TournamentsController {
   }
 
   @Post('create-arena')
-  async createArena(
-    @Req() req: AuthenticatedRequest,
-    @Body() body: CreateArenaDto,
-  ) {
-    if (!req.user || req.user.email !== 'admin@chessing.local') {
-      throw new UnauthorizedException('Only administrators can create arenas');
-    }
+  @UseGuards(AdminGuard)
+  async createArena(@Body() body: CreateArenaDto) {
     const startTime = new Date(Date.now() + body.startsInMinutes * 60000);
     return this.tournamentsService.createArena(
       body.name,
       body.timeControl,
       startTime,
       body.durationMinutes,
+    );
+  }
+
+  @Post('create-swiss')
+  @UseGuards(AdminGuard)
+  async createSwiss(@Body() body: CreateSwissDto) {
+    const startTime = new Date(Date.now() + body.startsInMinutes * 60000);
+    return this.tournamentsService.createSwiss(
+      body.name,
+      body.timeControl,
+      body.maxRounds,
+      startTime,
     );
   }
 }

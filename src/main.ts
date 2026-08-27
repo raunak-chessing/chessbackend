@@ -5,21 +5,27 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import { RedisIoAdapter } from './redis-io.adapter';
 import { SentryGlobalFilter } from './sentry.filter';
+import { Logger } from 'nestjs-pino';
 import helmet from 'helmet';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule, {
-    bodyParser: false,
+    rawBody: true,
+    bufferLogs: true,
   });
 
-  // Security
+  app.useLogger(app.get(Logger));
+  app.enableShutdownHooks();
+
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+
   app.use(helmet());
 
   const { httpAdapter } = app.get(HttpAdapterHost);
   app.useGlobalFilters(new SentryGlobalFilter(httpAdapter));
 
   app.enableCors({
-    origin: ['http://localhost:3000'],
+    origin: [frontendUrl],
     credentials: true,
   });
 

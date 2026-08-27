@@ -10,6 +10,7 @@ import {
 import { DailyGamesService } from './daily-games.service';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CreateDailyGameDto, MakeDailyMoveDto } from './dto/daily-games.dto';
+import { AllowAnonymous } from '@thallesp/nestjs-better-auth';
 
 @Controller('api/games/daily')
 export class DailyGamesController {
@@ -34,6 +35,7 @@ export class DailyGamesController {
     return this.dailyGamesService.getMyDailyGames(userId);
   }
 
+  @AllowAnonymous()
   @Get(':id')
   async getGame(@Param('id') gameId: string) {
     return this.dailyGamesService.getGameById(gameId);

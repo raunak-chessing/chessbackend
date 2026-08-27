@@ -1,38 +1,36 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import Redis from 'ioredis';
-import { ConfigService } from '@nestjs/config';
+import { RedisService } from '../redis/redis.service';
+import type Redis from 'ioredis';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Chess } from 'chess.js';
 
 @Injectable()
-export class VoteChessService implements OnModuleInit, OnModuleDestroy {
-  private redisClient: Redis;
+export class VoteChessService implements OnModuleInit {
+  private readonly redisClient: Redis;
   private readonly logger = new Logger(VoteChessService.name);
 
   constructor(
     private prisma: PrismaService,
-    private configService: ConfigService,
+    private redisService: RedisService,
   ) {
-    this.redisClient = new Redis({
-      host: this.configService.get<string>('REDIS_HOST', 'localhost'),
-      port: this.configService.get<number>('REDIS_PORT', 6379),
-      db: 4, // separate db for vote chess
-    });
+    this.redisClient = this.redisService.getClient();
   }
 
   async onModuleInit() {
     this.logger.log('Vote Chess Module Initialized');
   }
 
-  onModuleDestroy() {
-    this.redisClient.disconnect();
-  }
-
   async getActiveBossFight() {
     const data = await this.redisClient.get('boss_fight_state');
     if (!data) return null;
     return JSON.parse(data);
+  }
+
+  async initializeDefaultState() {
+    const state = { fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', isActive: true, turnCount: 0 };
+    await this.redisClient.set('boss_fight_state', JSON.stringify(state));
+    return state;
   }
 
   // Called via REST/Gateway when a user votes
@@ -90,11 +88,16 @@ export class VoteChessService implements OnModuleInit, OnModuleDestroy {
     // Now it's the Titan's turn (Stockfish)
     // We would fetch from chess-api.com
     try {
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), 10000);
+
       const res = await fetch('https://chess-api.com/v1', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fen: chess.fen(), depth: 15 }),
+        signal: abortController.signal,
       });
+      clearTimeout(timeoutId);
       const data = await res.json();
       if (data.move) {
         chess.move(data.move);

@@ -8,10 +8,28 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import type { AuthenticatedRequest } from '../types';
+import { AcademyService } from './academy.service';
 
 @Controller('academy')
 export class AcademyController {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private academyService: AcademyService,
+  ) {}
+
+  @Get('lessons')
+  getLessons() {
+    return this.academyService.getLessons();
+  }
+
+  @Get('lessons/:id')
+  getLesson(@Param('id') id: string) {
+    const lesson = this.academyService.getLesson(id);
+    if (!lesson) {
+      throw new UnauthorizedException('Lesson not found');
+    }
+    return lesson;
+  }
 
   @Get('progress')
   async getProgress(@Req() req: AuthenticatedRequest) {

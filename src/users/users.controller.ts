@@ -6,13 +6,22 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { PrismaReadService } from '../prisma/prisma-read.service';
+import { RedisService } from '../redis/redis.service';
 import { AllowAnonymous } from '@thallesp/nestjs-better-auth';
 import { SearchUsersDto, GetRatingHistoryDto } from './dto/users.dto';
+
+const LEADERBOARD_CACHE_KEY = 'cache:leaderboard:global';
+const LEADERBOARD_CACHE_TTL_SECONDS = 30;
 
 @AllowAnonymous()
 @Controller('users')
 export class UsersController {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private prismaRead: PrismaReadService,
+    private redisService: RedisService,
+  ) {}
 
   @Get('search')
   async searchUsers(@Query() query: SearchUsersDto) {
@@ -42,7 +51,6 @@ export class UsersController {
       select: {
         id: true,
         name: true,
-        email: true,
         image: true,
         rating: true,
         ratingBullet: true,
@@ -54,6 +62,7 @@ export class UsersController {
         lastActiveRapid: true,
         lastActiveDaily: true,
         createdAt: true,
+        isFlaggedForCheating: true,
       },
     });
 
@@ -61,7 +70,7 @@ export class UsersController {
       throw new NotFoundException('User not found');
     }
 
-    const games = await this.prisma.game.findMany({
+    const allGames = await this.prisma.game.findMany({
       where: {
         OR: [{ whitePlayerId: id }, { blackPlayerId: id }],
         status: { in: ['COMPLETED', 'DRAW'] },
@@ -91,8 +100,9 @@ export class UsersController {
         },
       },
       orderBy: { createdAt: 'desc' },
-      take: 10,
     });
+
+    const games = allGames.slice(0, 10);
 
     const statsTypes = ['BULLET', 'BLITZ', 'RAPID', 'DAILY'];
     const stats: Record<
@@ -103,13 +113,6 @@ export class UsersController {
     for (const type of statsTypes) {
       stats[type] = { total: 0, wins: 0, losses: 0, draws: 0 };
     }
-
-    const allGames = await this.prisma.game.findMany({
-      where: {
-        OR: [{ whitePlayerId: id }, { blackPlayerId: id }],
-        status: { in: ['COMPLETED', 'DRAW'] },
-      },
-    });
 
     for (const g of allGames) {
       const type = g.gameType || 'RAPID';
@@ -144,41 +147,31 @@ export class UsersController {
 
   @Get('leaderboard/global')
   async getGlobalLeaderboard() {
-    const topBullet = await this.prisma.user.findMany({
-      orderBy: { ratingBullet: 'desc' },
-      take: 50,
-      select: {
-        id: true,
-        name: true,
-        image: true,
-        country: true,
-        ratingBullet: true,
-      },
-    });
-    const topBlitz = await this.prisma.user.findMany({
-      orderBy: { ratingBlitz: 'desc' },
-      take: 50,
-      select: {
-        id: true,
-        name: true,
-        image: true,
-        country: true,
-        ratingBlitz: true,
-      },
-    });
-    const topRapid = await this.prisma.user.findMany({
-      orderBy: { ratingRapid: 'desc' },
-      take: 50,
-      select: {
-        id: true,
-        name: true,
-        image: true,
-        country: true,
-        ratingRapid: true,
-      },
-    });
+    const redis = this.redisService.getClient();
+    const cached = await redis.get(LEADERBOARD_CACHE_KEY);
+    if (cached) return JSON.parse(cached);
 
-    return { bullet: topBullet, blitz: topBlitz, rapid: topRapid };
+    const leaderboardSelect = {
+      id: true,
+      name: true,
+      image: true,
+      country: true,
+      ratingBullet: true,
+      ratingBlitz: true,
+      ratingRapid: true,
+    } as const;
+
+    // Read-heavy, refresh-tolerant query: served from the read replica when
+    // one is configured (DATABASE_REPLICA_URL), the primary otherwise.
+    const [topBullet, topBlitz, topRapid] = await Promise.all([
+      this.prismaRead.user.findMany({ orderBy: { ratingBullet: 'desc' }, take: 50, select: leaderboardSelect }),
+      this.prismaRead.user.findMany({ orderBy: { ratingBlitz: 'desc' }, take: 50, select: leaderboardSelect }),
+      this.prismaRead.user.findMany({ orderBy: { ratingRapid: 'desc' }, take: 50, select: leaderboardSelect }),
+    ]);
+
+    const result = { bullet: topBullet, blitz: topBlitz, rapid: topRapid };
+    await redis.set(LEADERBOARD_CACHE_KEY, JSON.stringify(result), 'EX', LEADERBOARD_CACHE_TTL_SECONDS);
+    return result;
   }
 
   @Get(':id/rating-history')
@@ -204,6 +197,7 @@ export class UsersController {
 
     return history;
   }
+
 
   @Get(':id/advanced-insights')
   async getAdvancedInsights(@Param('id') id: string) {

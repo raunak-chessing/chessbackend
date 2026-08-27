@@ -17,3 +17,21 @@ export class CreateArenaDto {
   @Min(0)
   startsInMinutes: number;
 }
+
+export class CreateSwissDto {
+  @IsString()
+  @IsNotEmpty()
+  name: string;
+
+  @IsString()
+  @IsNotEmpty()
+  timeControl: string;
+
+  @IsNumber()
+  @Min(1)
+  maxRounds: number;
+
+  @IsNumber()
+  @Min(0)
+  startsInMinutes: number;
+}

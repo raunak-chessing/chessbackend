@@ -80,21 +80,44 @@ export class FactionsService implements OnModuleInit {
     
     const newEraNumber = lastEra ? lastEra.eraNumber + 1 : 1;
 
-    await this.prisma.factionEra.create({
-      data: {
-        eraNumber: newEraNumber,
-        startDate: new Date(),
+    try {
+      await this.prisma.factionEra.create({
+        data: {
+          eraNumber: newEraNumber,
+          startDate: new Date(),
+        }
+      });
+      // Reset all faction scores and user contributions
+      await this.prisma.faction.updateMany({ data: { totalScore: 0 } });
+      await this.prisma.user.updateMany({ data: { factionContribution: 0, factionRank: 'GRUNT' } });
+      
+      this.logger.log(`Started Faction Era ${newEraNumber}`);
+    } catch (e: any) {
+      if (e.code === 'P2002') {
+        this.logger.log(`Era ${newEraNumber} already started by another process.`);
+      } else {
+        throw e;
       }
-    });
-
-    // Reset all faction scores and user contributions
-    await this.prisma.faction.updateMany({ data: { totalScore: 0 } });
-    await this.prisma.user.updateMany({ data: { factionContribution: 0, factionRank: 'GRUNT' } });
-    
-    this.logger.log(`Started Faction Era ${newEraNumber}`);
+    }
   }
 
   @Cron(CronExpression.EVERY_WEEK)
+  async getCurrentDivisions() {
+    const divisions = await this.prisma.userDivision.findMany({
+      where: { seasonEnd: { gt: new Date() } },
+      include: {
+        users: {
+          select: { id: true, name: true, factionContribution: true, rating: true },
+          orderBy: { factionContribution: 'desc' },
+          take: 50 // Limit to top 50 in each division
+        }
+      },
+      orderBy: { tier: 'asc' }
+    });
+
+    return divisions;
+  }
+
   async processDivisionPromotions() {
     this.logger.log('Processing weekly League Division promotions...');
     

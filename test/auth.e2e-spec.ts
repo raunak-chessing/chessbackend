@@ -10,7 +10,7 @@ import { AppModule } from './../src/app.module';
 
 import { PrismaService } from './../src/prisma/prisma.service';
 
-describe('Auth (e2e)', () => {
+describe('Authentication (e2e)', () => {
   let app: INestApplication<App>;
 
   let prisma: PrismaService;

@@ -40,6 +40,11 @@ enum GameWinner {
   DRAW
 }
 
+enum Role {
+  USER
+  ADMIN
+}
+
 enum FriendshipStatus {
   PENDING
   ACCEPTED
@@ -90,12 +95,19 @@ model User {
   gamesAsBlack  Game[]    @relation("BlackGames")
   lessonProgress LessonProgress[]
   tournaments   TournamentPlayer[]
-  
+  swissPairingsAsWhite TournamentPairing[] @relation("SwissWhitePairings")
+  swissPairingsAsBlack TournamentPairing[] @relation("SwissBlackPairings")
+
   sentRequests     Friendship[] @relation("SentRequests")
   receivedRequests Friendship[] @relation("ReceivedRequests")
   
   sentChallenges     Challenge[] @relation("SentChallenges")
   receivedChallenges Challenge[] @relation("ReceivedChallenges")
+  
+  blocksSent          Block[]      @relation("BlocksSent")
+  blocksReceived      Block[]      @relation("BlocksReceived")
+  reportsSent         Report[]     @relation("ReportsSent")
+  reportsReceived     Report[]     @relation("ReportsReceived")
   
   puzzleAttempts     PuzzleAttempt[]
   dailyPuzzleComments DailyPuzzleComment[]
@@ -117,6 +129,8 @@ model User {
   divisionId         String?
   division           UserDivision? @relation(fields: [divisionId], references: [id])
   
+  role                 Role    @default(USER)
+
   isFlaggedForCheating Boolean @default(false)
   flaggedReason        String?
   averageCaps          Float   @default(0)
@@ -195,11 +209,22 @@ model Game {
   deadline            DateTime?
   isTimeout           Boolean    @default(false)
   gameType            String     @default("RAPID")
+  variant             String     @default("standard")
+  whiteChecks         Int        @default(0)
+  blackChecks         Int        @default(0)
+
+  whiteTimeMs         Int?
+  blackTimeMs         Int?
+  incrementMs         Int?
+  lastMoveTime        DateTime?
+
+  wagersSettledAt     DateTime?
 
   createdAt           DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
-  
+
   messages            Message[]
+  tournamentPairing   TournamentPairing?
 }
 
 model LessonProgress {
@@ -223,9 +248,42 @@ model Tournament {
   timeControl   String
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
-  
+
   players       TournamentPlayer[]
   games         Game[]
+  rounds        TournamentRound[]
+  pairings      TournamentPairing[]
+}
+
+model TournamentRound {
+  id           String    @id @default(uuid())
+  tournamentId String
+  roundNumber  Int
+  startedAt    DateTime  @default(now())
+  completedAt  DateTime?
+
+  tournament   Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+
+  @@unique([tournamentId, roundNumber])
+}
+
+model TournamentPairing {
+  id            String   @id @default(uuid())
+  tournamentId  String
+  roundNumber   Int
+  whitePlayerId String
+  blackPlayerId String?
+  gameId        String?  @unique
+  isBye         Boolean  @default(false)
+  result        String?
+  createdAt     DateTime @default(now())
+
+  tournament    Tournament @relation(fields: [tournamentId], references: [id], onDelete: Cascade)
+  whitePlayer   User       @relation("SwissWhitePairings", fields: [whitePlayerId], references: [id])
+  blackPlayer   User?      @relation("SwissBlackPairings", fields: [blackPlayerId], references: [id])
+  game          Game?      @relation(fields: [gameId], references: [id])
+
+  @@index([tournamentId, roundNumber])
 }
 
 model TournamentPlayer {
@@ -281,6 +339,8 @@ model Puzzle {
   
   puzzleAttempts PuzzleAttempt[]
   dailyPuzzles   DailyPuzzle[]
+
+  @@index([rating])
 }
 
 model PuzzleAttempt {
@@ -296,6 +356,7 @@ model PuzzleAttempt {
   puzzle Puzzle @relation(fields: [puzzleId], references: [id], onDelete: Cascade)
   
   @@unique([userId, puzzleId])
+  @@index([userId])
 }
 
 model DailyPuzzle {
@@ -342,16 +403,20 @@ model UserAchievement {
 }
 
 model Message {
-  id         String   @id @default(uuid())
+  id         String    @id @default(uuid())
   content    String
   senderId   String
   receiverId String?
   gameId     String?
-  createdAt  DateTime @default(now())
+  readAt     DateTime?
+  createdAt  DateTime  @default(now())
 
   sender   User  @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
   receiver User? @relation("ReceivedMessages", fields: [receiverId], references: [id], onDelete: Cascade)
   game     Game? @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@index([senderId, createdAt])
+  @@index([receiverId, createdAt])
 }
 
 model Study {
@@ -467,13 +532,37 @@ model PlayerInventory {
   items     Item[]
 }
 
+enum CosmeticType {
+  BOARD_THEME
+  PIECE_SET
+  AVATAR_FRAME
+}
+
+model ShopItem {
+  id               String       @id @default(cuid())
+  key              String       @unique
+  name             String
+  description      String
+  type             CosmeticType
+  rarity           String       @default("COMMON")
+  priceGold        Int?
+  priceAetherium   Int?
+  imageUrl         String?
+  createdAt        DateTime     @default(now())
+  items            Item[]
+}
+
 model Item {
-  id          String   @id @default(cuid())
+  id          String          @id @default(cuid())
   inventoryId String
   inventory   PlayerInventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
-  name        String
-  type        String   // "COSMETIC", "CONSUMABLE"
-  rarity      String   @default("COMMON")
+  shopItemId  String
+  shopItem    ShopItem        @relation(fields: [shopItemId], references: [id], onDelete: Cascade)
+  equipped    Boolean         @default(false)
+  acquiredAt  DateTime        @default(now())
+
+  @@unique([inventoryId, shopItemId])
+  @@index([inventoryId, equipped])
 }
 
 
@@ -492,4 +581,29 @@ model UserDivision {
   createdAt DateTime @default(now())
   
   users     User[]
+}
+
+model Block {
+  id        String   @id @default(uuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker   User     @relation("BlocksSent", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked   User     @relation("BlocksReceived", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+}
+
+model Report {
+  id          String   @id @default(uuid())
+  reporterId  String
+  reportedId  String
+  reason      String
+  description String?
+  status      String   @default("PENDING")
+  createdAt   DateTime @default(now())
+
+  reporter    User     @relation("ReportsSent", fields: [reporterId], references: [id], onDelete: Cascade)
+  reported    User     @relation("ReportsReceived", fields: [reportedId], references: [id], onDelete: Cascade)
 }
