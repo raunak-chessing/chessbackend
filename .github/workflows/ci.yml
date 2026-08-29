@@ -25,10 +25,15 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Generate Prisma client
-        run: npx prisma generate
+        run: pnpm exec prisma generate
+        env:
+          # prisma.config.js resolves DATABASE_URL for every CLI command,
+          # including generate, which never opens a connection — a
+          # placeholder is enough to satisfy the config loader here.
+          DATABASE_URL: postgresql://user:password@localhost:5432/db
 
       - name: Type-check and compile
         run: pnpm run build
 
       - name: Run unit tests
-        run: npx jest --ci
+        run: pnpm exec jest --ci

@@ -11,7 +11,7 @@ COPY . .
 # `generate`, which only reads the schema and never opens a connection — no
 # env vars are available at build time otherwise, so a placeholder is enough.
 ENV DATABASE_URL="postgresql://user:password@localhost:5432/db"
-RUN npx prisma generate
+RUN pnpm exec prisma generate
 RUN pnpm run build
 RUN pnpm prune --prod
 
