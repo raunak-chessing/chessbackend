@@ -31,6 +31,10 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/prisma ./prisma
+# prisma.config.js lives at the repo root, not inside prisma/ — Prisma's CLI
+# (7.x) requires it to resolve datasource.url for `migrate deploy`, which
+# runs against this runtime image, not the builder stage.
+COPY --from=builder /app/prisma.config.js ./prisma.config.js
 
 EXPOSE 4001
 CMD ["node", "dist/src/main"]
