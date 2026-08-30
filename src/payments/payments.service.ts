@@ -19,8 +19,10 @@ export class PaymentsService {
 
     const secretKey = this.configService.get<string>('STRIPE_SECRET_KEY');
     const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET');
-    if (this.configService.get<string>('NODE_ENV') === 'production' && (!secretKey || !webhookSecret)) {
-      throw new Error('STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET must be set in production');
+    if (!secretKey || !webhookSecret) {
+      this.logger.warn(
+        'STRIPE_SECRET_KEY / STRIPE_WEBHOOK_SECRET not set — payments are disabled; checkout and webhook calls will fail until real keys are configured.',
+      );
     }
 
     this.stripe = new Stripe(secretKey || 'sk_test_dummy', {

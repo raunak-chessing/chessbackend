@@ -30,16 +30,8 @@ export const envValidationSchema = Joi.object({
 
   SENTRY_DSN: Joi.string().optional().allow(''),
 
-  STRIPE_SECRET_KEY: Joi.string().when('NODE_ENV', {
-    is: 'production',
-    then: Joi.required(),
-    otherwise: Joi.optional().allow(''),
-  }),
-  STRIPE_WEBHOOK_SECRET: Joi.string().when('NODE_ENV', {
-    is: 'production',
-    then: Joi.required(),
-    otherwise: Joi.optional().allow(''),
-  }),
+  STRIPE_SECRET_KEY: Joi.string().optional().allow(''),
+  STRIPE_WEBHOOK_SECRET: Joi.string().optional().allow(''),
   STRIPE_PREMIUM_PRICE_ID: Joi.string().optional().allow(''),
 
   SMTP_HOST: Joi.string().default('smtp.ethereal.email'),
