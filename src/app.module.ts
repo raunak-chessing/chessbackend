@@ -35,6 +35,7 @@ import { AdminModule } from './admin/admin.module';
 import { envValidationSchema } from './config/env.validation';
 import { RedisModule } from './redis/redis.module';
 import { RedisService } from './redis/redis.service';
+import { CommonModule } from './common/common.module';
 
 @Module({
   imports: [
@@ -97,6 +98,7 @@ import { RedisService } from './redis/redis.service';
     InventoryModule,
     ShopModule,
     AdminModule,
+    CommonModule,
   ],
   controllers: [AppController],
   providers: [
