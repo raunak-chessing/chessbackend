@@ -1,10 +1,14 @@
 import { Controller, Get, Post, Body, Req, UnauthorizedException } from '@nestjs/common';
 import { FactionsService } from './factions.service';
+import { DivisionPromotionService } from './division-promotion.service';
 import type { AuthenticatedRequest } from '../types';
 
 @Controller('api/factions')
 export class FactionsController {
-  constructor(private readonly factionsService: FactionsService) {}
+  constructor(
+    private readonly factionsService: FactionsService,
+    private readonly divisionPromotionService: DivisionPromotionService,
+  ) {}
 
   @Get()
   async getFactions() {
@@ -19,6 +23,6 @@ export class FactionsController {
 
   @Get('divisions')
   async getDivisions() {
-    return this.factionsService.getCurrentDivisions();
+    return this.divisionPromotionService.getCurrentDivisions();
   }
 }

@@ -1,12 +1,16 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { FactionsController } from './factions.controller';
 import { FactionsService } from './factions.service';
+import { DivisionPromotionService } from './division-promotion.service';
 import { UnauthorizedException } from '@nestjs/common';
 import { AuthenticatedRequest } from '../types';
 
 const mockFactionsService = {
   getAllFactions: jest.fn(),
   joinFaction: jest.fn(),
+};
+
+const mockDivisionPromotionService = {
   getCurrentDivisions: jest.fn(),
 };
 
@@ -17,7 +21,10 @@ describe('FactionsController', () => {
     jest.clearAllMocks();
     const module: TestingModule = await Test.createTestingModule({
       controllers: [FactionsController],
-      providers: [{ provide: FactionsService, useValue: mockFactionsService }],
+      providers: [
+        { provide: FactionsService, useValue: mockFactionsService },
+        { provide: DivisionPromotionService, useValue: mockDivisionPromotionService },
+      ],
     }).compile();
 
     controller = module.get<FactionsController>(FactionsController);
@@ -37,10 +44,10 @@ describe('FactionsController', () => {
   });
 
   describe('getDivisions', () => {
-    it('should call getCurrentDivisions on the service', async () => {
-      mockFactionsService.getCurrentDivisions.mockResolvedValueOnce([{ tier: 'WOOD' }]);
+    it('should call getCurrentDivisions on the division promotion service', async () => {
+      mockDivisionPromotionService.getCurrentDivisions.mockResolvedValueOnce([{ tier: 'WOOD' }]);
       const res = await controller.getDivisions();
-      expect(mockFactionsService.getCurrentDivisions).toHaveBeenCalled();
+      expect(mockDivisionPromotionService.getCurrentDivisions).toHaveBeenCalled();
       expect(res).toEqual([{ tier: 'WOOD' }]);
     });
   });

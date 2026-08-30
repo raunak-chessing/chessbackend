@@ -1,28 +1,20 @@
-import { Injectable, OnModuleInit, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, OnModuleInit, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { EraLifecycleService } from './era-lifecycle.service';
+import { DivisionPromotionService } from './division-promotion.service';
 
 @Injectable()
 export class FactionsService implements OnModuleInit {
-  private readonly logger = new Logger(FactionsService.name);
-
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly eraLifecycleService: EraLifecycleService,
+    private readonly divisionPromotionService: DivisionPromotionService,
+  ) {}
 
   async onModuleInit() {
     await this.seedFactions();
-    await this.ensureActiveEra();
-    await this.ensureDivisions();
-  }
-
-  private async ensureDivisions() {
-    const defaultDivision = await this.prisma.userDivision.findFirst({ where: { tier: 'WOOD' } });
-    if (!defaultDivision) {
-      const seasonEnd = new Date();
-      seasonEnd.setDate(seasonEnd.getDate() + (7 - seasonEnd.getDay())); // Next Sunday
-      await this.prisma.userDivision.create({
-        data: { tier: 'WOOD', seasonEnd }
-      });
-    }
+    await this.eraLifecycleService.ensureActiveEra();
+    await this.divisionPromotionService.ensureDivisions();
   }
 
   private async seedFactions() {
@@ -60,171 +52,6 @@ export class FactionsService implements OnModuleInit {
         },
       });
     }
-  }
-
-  private async ensureActiveEra() {
-    const activeEra = await this.prisma.factionEra.findFirst({
-      where: { endDate: null },
-      orderBy: { eraNumber: 'desc' }
-    });
-
-    if (!activeEra) {
-      await this.startNewEra();
-    }
-  }
-
-  async startNewEra() {
-    const lastEra = await this.prisma.factionEra.findFirst({
-      orderBy: { eraNumber: 'desc' }
-    });
-    
-    const newEraNumber = lastEra ? lastEra.eraNumber + 1 : 1;
-
-    try {
-      await this.prisma.factionEra.create({
-        data: {
-          eraNumber: newEraNumber,
-          startDate: new Date(),
-        }
-      });
-      // Reset all faction scores and user contributions
-      await this.prisma.faction.updateMany({ data: { totalScore: 0 } });
-      await this.prisma.user.updateMany({ data: { factionContribution: 0, factionRank: 'GRUNT' } });
-      
-      this.logger.log(`Started Faction Era ${newEraNumber}`);
-    } catch (e: any) {
-      if (e.code === 'P2002') {
-        this.logger.log(`Era ${newEraNumber} already started by another process.`);
-      } else {
-        throw e;
-      }
-    }
-  }
-
-  @Cron(CronExpression.EVERY_WEEK)
-  async getCurrentDivisions() {
-    const divisions = await this.prisma.userDivision.findMany({
-      where: { seasonEnd: { gt: new Date() } },
-      include: {
-        users: {
-          select: { id: true, name: true, factionContribution: true, rating: true },
-          orderBy: { factionContribution: 'desc' },
-          take: 50 // Limit to top 50 in each division
-        }
-      },
-      orderBy: { tier: 'asc' }
-    });
-
-    return divisions;
-  }
-
-  async processDivisionPromotions() {
-    this.logger.log('Processing weekly League Division promotions...');
-    
-    const divisions = await this.prisma.userDivision.findMany({
-      include: { users: { orderBy: { factionContribution: 'desc' } } }
-    });
-
-    const TIERS = ['WOOD', 'STONE', 'BRONZE', 'SILVER', 'CRYSTAL', 'ELITE', 'CHAMPION', 'LEGEND'];
-
-    const newSeasonEnd = new Date();
-    newSeasonEnd.setDate(newSeasonEnd.getDate() + 7);
-
-    // Create new division instances for the next week
-    const newDivisions = await Promise.all(TIERS.map(tier => 
-      this.prisma.userDivision.create({
-        data: { tier, seasonEnd: newSeasonEnd }
-      })
-    ));
-
-    const tierToIdMap = new Map(newDivisions.map(d => [d.tier, d.id]));
-
-    // Group users by their target division to batch updates
-    const updatesByDivision: Record<string, string[]> = {};
-
-    for (const division of divisions) {
-      const users = division.users;
-      if (users.length === 0) continue;
-
-      const currentTierIndex = TIERS.indexOf(division.tier);
-      
-      const promoteCount = Math.max(1, Math.floor(users.length * 0.2));
-      const relegateCount = Math.max(1, Math.floor(users.length * 0.2));
-
-      for (let i = 0; i < users.length; i++) {
-        const user = users[i];
-        let nextTierIndex = currentTierIndex;
-
-        if (i < promoteCount && currentTierIndex < TIERS.length - 1) {
-          nextTierIndex++;
-        } else if (i >= users.length - relegateCount && currentTierIndex > 0) {
-          nextTierIndex--;
-        }
-
-        const nextDivisionId = tierToIdMap.get(TIERS[nextTierIndex]);
-        if (nextDivisionId) {
-          if (!updatesByDivision[nextDivisionId]) {
-            updatesByDivision[nextDivisionId] = [];
-          }
-          updatesByDivision[nextDivisionId].push(user.id);
-        }
-      }
-    }
-
-    // Execute bulk updates
-    for (const [nextDivisionId, userIds] of Object.entries(updatesByDivision)) {
-      if (userIds.length > 0) {
-        await this.prisma.user.updateMany({
-          where: { id: { in: userIds } },
-          data: {
-            divisionId: nextDivisionId,
-            factionContribution: 0
-          }
-        });
-      }
-    }
-  }
-
-  @Cron(CronExpression.EVERY_1ST_DAY_OF_MONTH_AT_MIDNIGHT)
-  async distributeEraRewards() {
-    this.logger.log('Ending current Era and distributing rewards...');
-    
-    const activeEra = await this.prisma.factionEra.findFirst({
-      where: { endDate: null },
-      orderBy: { eraNumber: 'desc' }
-    });
-
-    if (!activeEra) return;
-
-    // Find winning faction
-    const factions = await this.getAllFactions();
-    if (factions.length === 0) return;
-    
-    const winner = factions[0]; // Ordered by score desc
-
-    await this.prisma.factionEra.update({
-      where: { id: activeEra.id },
-      data: { 
-        endDate: new Date(),
-        winnerId: winner.id 
-      }
-    });
-
-    // Reward active players of the winning faction
-    const winningUsers = await this.prisma.user.findMany({
-      where: { factionId: winner.id, factionContribution: { gt: 100 } }
-    });
-
-    // Grant massive Aetherium to winners
-    for (const user of winningUsers) {
-      await this.prisma.playerInventory.upsert({
-        where: { userId: user.id },
-        create: { userId: user.id, aetherium: 500, gold: 5000 },
-        update: { aetherium: { increment: 500 }, gold: { increment: 5000 } }
-      });
-    }
-
-    await this.startNewEra();
   }
 
   async getAllFactions() {
@@ -271,9 +98,9 @@ export class FactionsService implements OnModuleInit {
 
     await this.prisma.user.update({
       where: { id: userId },
-      data: { 
+      data: {
         factionContribution: newContrib,
-        factionRank: newRank 
+        factionRank: newRank
       }
     });
 
