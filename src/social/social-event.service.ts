@@ -1,12 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { RedisService } from '../redis/redis.service';
+import { CacheService } from '../redis/cache.service';
 
 @Injectable()
 export class SocialEventService {
-  constructor(private readonly redisService: RedisService) {}
+  constructor(private readonly cacheService: CacheService) {}
 
   async publish(userId: string, event: string, data: unknown) {
-    await this.redisService.getClient().publish(
+    await this.cacheService.publish(
       'social:events',
       JSON.stringify({ userId, event, data }),
     );

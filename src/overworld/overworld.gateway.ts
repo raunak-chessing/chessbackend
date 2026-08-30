@@ -9,11 +9,10 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { OverworldService } from './overworld.service';
-import { UsePipes, ValidationPipe, UseFilters, Logger } from '@nestjs/common';
+import { UsePipes, ValidationPipe } from '@nestjs/common';
 import { IsNumber, IsNotEmpty } from 'class-validator';
-import { PrismaService } from '../prisma/prisma.service';
-import { RedisService } from '../redis/redis.service';
-import { checkRateLimit } from '../common/rate-limit.util';
+import { WsAuthService } from '../common/ws-auth.service';
+import { CacheService } from '../redis/cache.service';
 
 class MoveAvatarDto {
   @IsNumber()
@@ -37,39 +36,16 @@ export class OverworldGateway implements OnGatewayConnection, OnGatewayDisconnec
   @WebSocketServer()
   server: Server;
 
-  private readonly logger = new Logger(OverworldGateway.name);
-
   constructor(
     private readonly overworldService: OverworldService,
-    private readonly prisma: PrismaService,
-    private readonly redisService: RedisService,
+    private readonly wsAuthService: WsAuthService,
+    private readonly cacheService: CacheService,
   ) {}
 
   async handleConnection(client: Socket) {
-    let sessionToken = (client.handshake.auth as Record<string, unknown>)
-      ?.token as string;
-    if (!sessionToken && client.handshake.headers.cookie) {
-      const match = client.handshake.headers.cookie.match(
-        /(?:__Secure-)?better-auth\.session_token=([^;]+)/,
-      );
-      if (match) {
-        sessionToken = match[1];
-      }
-    }
-
-    if (!sessionToken) return;
-
-    try {
-      const session = await this.prisma.session.findUnique({
-        where: { token: sessionToken },
-        include: { user: true },
-      });
-
-      if (session && session.expiresAt > new Date()) {
-        client.data.userId = session.user.id;
-      }
-    } catch (err: any) {
-      this.logger.error(`Error in handleConnection: ${err.message}`);
+    const user = await this.wsAuthService.resolveUser(client);
+    if (user) {
+      client.data.userId = user.id;
     }
   }
 
@@ -92,7 +68,7 @@ export class OverworldGateway implements OnGatewayConnection, OnGatewayDisconnec
     const userId = client.data.userId;
     if (!userId) return;
 
-    const withinLimit = await checkRateLimit(this.redisService.getClient(), `ratelimit:avatar_move:${userId}`, 20, 5);
+    const withinLimit = await this.cacheService.checkRateLimit(`ratelimit:avatar_move:${userId}`, 20, 5);
     if (!withinLimit) return;
 
     await this.overworldService.setPlayerPosition(userId, data.q, data.r);

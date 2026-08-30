@@ -2,14 +2,13 @@ import { Controller, Get, Post, Param, Body, Query, UnauthorizedException, BadRe
 import { MessagesService } from './messages.service';
 import { SendMessageDto } from './dto/messages.dto';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { RedisService } from '../redis/redis.service';
-import { checkRateLimit } from '../common/rate-limit.util';
+import { CacheService } from '../redis/cache.service';
 
 @Controller('api/social/messages')
 export class MessagesController {
   constructor(
     private readonly messagesService: MessagesService,
-    private readonly redisService: RedisService,
+    private readonly cacheService: CacheService,
   ) {}
 
   @Get()
@@ -36,7 +35,7 @@ export class MessagesController {
   ) {
     if (!userId) throw new UnauthorizedException('Not logged in');
 
-    const withinLimit = await checkRateLimit(this.redisService.getClient(), `ratelimit:dm:${userId}`, 20, 10);
+    const withinLimit = await this.cacheService.checkRateLimit(`ratelimit:dm:${userId}`, 20, 10);
     if (!withinLimit) throw new BadRequestException('You are sending messages too quickly');
 
     return this.messagesService.sendMessage(userId, receiverId, body.content);

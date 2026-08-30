@@ -1,17 +1,13 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { RedisService } from '../redis/redis.service';
+import { CacheService } from '../redis/cache.service';
 
 @Injectable()
 export class AdminService {
-  private redisClient: ReturnType<RedisService['getClient']>;
-
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redisService: RedisService,
-  ) {
-    this.redisClient = this.redisService.getClient();
-  }
+    private readonly cacheService: CacheService,
+  ) {}
 
   async flagUser(userId: string, reason?: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
@@ -24,15 +20,15 @@ export class AdminService {
   }
 
   async deleteChatMessage(messageId: string) {
-    await this.redisClient.publish('admin:events', JSON.stringify({ type: 'chat_message_deleted', messageId }));
+    await this.cacheService.publish('admin:events', JSON.stringify({ type: 'chat_message_deleted', messageId }));
     return { messageId, deleted: true };
   }
 
   async setMatchmakingPaused(paused: boolean) {
     if (paused) {
-      await this.redisClient.set('matchmaking:paused', '1');
+      await this.cacheService.set('matchmaking:paused', '1');
     } else {
-      await this.redisClient.del('matchmaking:paused');
+      await this.cacheService.delete('matchmaking:paused');
     }
     return { paused };
   }

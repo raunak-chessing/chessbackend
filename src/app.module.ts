@@ -34,7 +34,7 @@ import { ShopModule } from './shop/shop.module';
 import { AdminModule } from './admin/admin.module';
 import { envValidationSchema } from './config/env.validation';
 import { RedisModule } from './redis/redis.module';
-import { RedisService } from './redis/redis.service';
+import { CacheService } from './redis/cache.service';
 import { CommonModule } from './common/common.module';
 
 @Module({
@@ -66,14 +66,14 @@ import { CommonModule } from './common/common.module';
     MailModule,
     AuthModule.forRootAsync({
       imports: [PrismaModule, MailModule, ConfigModule, RedisModule],
-      inject: [PrismaService, MailService, ConfigService, RedisService],
+      inject: [PrismaService, MailService, ConfigService, CacheService],
       useFactory: (
         prisma: PrismaService,
         mailService: MailService,
         config: ConfigService,
-        redisService: RedisService,
+        cacheService: CacheService,
       ) => ({
-        auth: getAuth(prisma, mailService, config, redisService),
+        auth: getAuth(prisma, mailService, config, cacheService),
       }),
     }),
     PrismaModule,

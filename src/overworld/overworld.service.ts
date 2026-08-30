@@ -1,20 +1,16 @@
 import { Injectable, OnModuleInit, NotFoundException, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { RedisService } from '../redis/redis.service';
-import type Redis from 'ioredis';
+import { CacheService } from '../redis/cache.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
 @Injectable()
 export class OverworldService implements OnModuleInit {
-  private readonly redisClient: Redis;
   private readonly logger = new Logger(OverworldService.name);
 
   constructor(
     private prisma: PrismaService,
-    private redisService: RedisService,
-  ) {
-    this.redisClient = this.redisService.getClient();
-  }
+    private cacheService: CacheService,
+  ) {}
 
   async onModuleInit() {
     await this.cacheWorldMap();
@@ -28,15 +24,15 @@ export class OverworldService implements OnModuleInit {
       }
     });
 
-    await this.redisClient.set('aethelgard_map', JSON.stringify(hexes));
+    await this.cacheService.setJson('aethelgard_map', hexes);
     this.logger.log(`Cached ${hexes.length} hexes in Redis for Aethelgard Overworld.`);
   }
 
   async getMapState(userId?: string) {
     let hexes: Record<string, unknown>[] = [];
-    const cachedMap = await this.redisClient.get('aethelgard_map');
+    const cachedMap = await this.cacheService.getJson<Record<string, unknown>[]>('aethelgard_map');
     if (cachedMap) {
-      hexes = JSON.parse(cachedMap) as Record<string, unknown>[];
+      hexes = cachedMap;
     } else {
       hexes = await this.prisma.worldHex.findMany({
         include: {
@@ -44,7 +40,7 @@ export class OverworldService implements OnModuleInit {
           structures: true,
         }
       }) as unknown as Record<string, unknown>[];
-      await this.redisClient.set('aethelgard_map', JSON.stringify(hexes));
+      await this.cacheService.setJson('aethelgard_map', hexes);
     }
 
     if (!userId) return hexes;
@@ -89,13 +85,11 @@ export class OverworldService implements OnModuleInit {
   }
 
   async setPlayerPosition(userId: string, q: number, r: number) {
-    await this.redisClient.setex(`overworld:player_pos:${userId}`, 300, JSON.stringify({ q, r }));
+    await this.cacheService.setJson(`overworld:player_pos:${userId}`, { q, r }, 300);
   }
 
   async getPlayerPosition(userId: string) {
-    const pos = await this.redisClient.get(`overworld:player_pos:${userId}`);
-    if (pos) return JSON.parse(pos) as { q: number; r: number };
-    return null;
+    return this.cacheService.getJson<{ q: number; r: number }>(`overworld:player_pos:${userId}`);
   }
 
   async buildStructure(userId: string, hexId: string, structureType: string) {
@@ -146,7 +140,7 @@ export class OverworldService implements OnModuleInit {
     if (!user || !user.factionId) throw new BadRequestException('Not in a faction');
 
     const cooldownKey = `overworld:siege_cooldown:${userId}:${hexId}`;
-    const onCooldown = await this.redisClient.exists(cooldownKey);
+    const onCooldown = await this.cacheService.exists(cooldownKey);
     if (onCooldown) throw new BadRequestException('This hex was sieged too recently, wait before attacking it again');
 
     const { gold, aetherium } = OverworldService.SIEGE_COST;
@@ -159,7 +153,7 @@ export class OverworldService implements OnModuleInit {
       where: { factionId: user.factionId },
       data: { gold: { decrement: gold }, aetherium: { decrement: aetherium } },
     });
-    await this.redisClient.setex(cooldownKey, OverworldService.SIEGE_COOLDOWN_SECONDS, '1');
+    await this.cacheService.set(cooldownKey, '1', OverworldService.SIEGE_COOLDOWN_SECONDS);
 
     await this.applySiegeDamage(hexId, user.factionId, 100);
     return { success: true };

@@ -85,6 +85,18 @@ describe('CacheService', () => {
     });
   });
 
+  describe('hashDelete / removeFromSet', () => {
+    it('hashDelete removes a single field', async () => {
+      await service.hashDelete('h1', 'field1');
+      expect(mockRedisClient.hdel).toHaveBeenCalledWith('h1', 'field1');
+    });
+
+    it('removeFromSet removes a single member', async () => {
+      await service.removeFromSet('s1', 'member1');
+      expect(mockRedisClient.srem).toHaveBeenCalledWith('s1', 'member1');
+    });
+  });
+
   describe('locks', () => {
     it('acquireLock delegates to setIfNotExists semantics', async () => {
       mockRedisClient.set.mockResolvedValueOnce('OK');

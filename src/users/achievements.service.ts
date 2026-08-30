@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { RedisService } from '../redis/redis.service';
+import { CacheService } from '../redis/cache.service';
 
 @Injectable()
 export class AchievementsService implements OnModuleInit {
@@ -8,7 +8,7 @@ export class AchievementsService implements OnModuleInit {
 
   constructor(
     private prisma: PrismaService,
-    private redis: RedisService,
+    private cacheService: CacheService,
   ) {}
 
   onModuleInit() {
@@ -16,25 +16,20 @@ export class AchievementsService implements OnModuleInit {
   }
 
   private listenForEvents() {
-    const subscriber = this.redis.getClient().duplicate();
-    subscriber.subscribe('gameserver:events', (err) => {
-      if (err) {
-        this.logger.error('Failed to subscribe to gameserver events', err);
-      }
+    this.cacheService.subscribe('gameserver:events', (message) => {
+      void this.handleMessage(message);
     });
+  }
 
-    subscriber.on('message', async (channel, message) => {
-      if (channel === 'gameserver:events') {
-        try {
-          const event = JSON.parse(message);
-          if (event.type === 'game_ended') {
-            await this.processGameEndAchievements(event.gameId);
-          }
-        } catch (e) {
-          this.logger.error('Error processing achievement event', e);
-        }
+  private async handleMessage(message: string): Promise<void> {
+    try {
+      const event = JSON.parse(message);
+      if (event.type === 'game_ended') {
+        await this.processGameEndAchievements(event.gameId);
       }
-    });
+    } catch (e) {
+      this.logger.error('Error processing achievement event', e);
+    }
   }
 
   private async processGameEndAchievements(gameId: string) {
@@ -56,7 +51,7 @@ export class AchievementsService implements OnModuleInit {
 
     // 10 Wins Achievement
     const wins = await this.prisma.game.count({
-      where: { 
+      where: {
         OR: [
           { whitePlayerId: winnerId, winner: 'WHITE' },
           { blackPlayerId: winnerId, winner: 'BLACK' }
@@ -82,9 +77,10 @@ export class AchievementsService implements OnModuleInit {
         }
       });
       this.logger.log(`Awarded achievement ${achievementCode} to user ${userId}`);
-      
-      // Notify frontend
-      this.redis.getClient().publish('achievements:unlocked', JSON.stringify({ userId, code: achievementCode, title, description }));
+
+      // Notify frontend (fire-and-forget, matching the original — not on
+      // the critical path of granting the achievement).
+      this.cacheService.publish('achievements:unlocked', JSON.stringify({ userId, code: achievementCode, title, description }));
     }
   }
 }

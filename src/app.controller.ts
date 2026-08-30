@@ -2,14 +2,14 @@ import { Controller, Get, HttpCode, HttpStatus, ServiceUnavailableException } fr
 
 import { AllowAnonymous } from '@thallesp/nestjs-better-auth';
 import { PrismaService } from './prisma/prisma.service';
-import { RedisService } from './redis/redis.service';
+import { CacheService } from './redis/cache.service';
 
 @AllowAnonymous()
 @Controller()
 export class AppController {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redisService: RedisService,
+    private readonly cacheService: CacheService,
   ) {}
 
   @Get('health')
@@ -24,7 +24,7 @@ export class AppController {
     try {
       await Promise.all([
         this.prisma.$queryRaw`SELECT 1`,
-        this.redisService.getClient().ping(),
+        this.cacheService.ping(),
       ]);
       return { status: 'ready' };
     } catch (err) {

@@ -1,20 +1,15 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { QuestsService } from '../quests/quests.service';
-import { RedisService } from '../redis/redis.service';
-import type Redis from 'ioredis';
+import { CacheService } from '../redis/cache.service';
 
 @Injectable()
 export class PuzzlesService {
-  private readonly redisClient: Redis;
-
   constructor(
     private prisma: PrismaService,
     private questsService: QuestsService,
-    private redisService: RedisService,
-  ) {
-    this.redisClient = this.redisService.getClient();
-  }
+    private cacheService: CacheService,
+  ) {}
 
   async getRatedPuzzle(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
@@ -56,7 +51,7 @@ export class PuzzlesService {
     }
 
     // Record timestamp for validation
-    await this.redisClient.set(`puzzle_start:${userId}:${puzzle.id}`, Date.now().toString(), 'EX', 3600);
+    await this.cacheService.set(`puzzle_start:${userId}:${puzzle.id}`, Date.now().toString(), 3600);
     return puzzle;
   }
 
@@ -123,7 +118,7 @@ export class PuzzlesService {
     if (!user || !puzzle)
       throw new NotFoundException('User or Puzzle not found');
 
-    const startTimestampStr = await this.redisClient.get(`puzzle_start:${userId}:${puzzle.id}`);
+    const startTimestampStr = await this.cacheService.get(`puzzle_start:${userId}:${puzzle.id}`);
     
     // Server-side timing validation
     if (!startTimestampStr) {
@@ -141,7 +136,7 @@ export class PuzzlesService {
     }
 
     // Cleanup session
-    await this.redisClient.del(`puzzle_start:${userId}:${puzzle.id}`);
+    await this.cacheService.delete(`puzzle_start:${userId}:${puzzle.id}`);
 
     const success = JSON.stringify(movesMade) === JSON.stringify(puzzle.moves);
 

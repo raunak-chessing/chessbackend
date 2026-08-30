@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { PrismaReadService } from '../prisma/prisma-read.service';
-import { RedisService } from '../redis/redis.service';
+import { CacheService } from '../redis/cache.service';
 import { AllowAnonymous } from '@thallesp/nestjs-better-auth';
 import { SearchUsersDto, GetRatingHistoryDto } from './dto/users.dto';
 
@@ -20,7 +20,7 @@ export class UsersController {
   constructor(
     private prisma: PrismaService,
     private prismaRead: PrismaReadService,
-    private redisService: RedisService,
+    private cacheService: CacheService,
   ) {}
 
   @Get('search')
@@ -147,9 +147,8 @@ export class UsersController {
 
   @Get('leaderboard/global')
   async getGlobalLeaderboard() {
-    const redis = this.redisService.getClient();
-    const cached = await redis.get(LEADERBOARD_CACHE_KEY);
-    if (cached) return JSON.parse(cached);
+    const cached = await this.cacheService.getJson(LEADERBOARD_CACHE_KEY);
+    if (cached) return cached;
 
     const leaderboardSelect = {
       id: true,
@@ -170,7 +169,7 @@ export class UsersController {
     ]);
 
     const result = { bullet: topBullet, blitz: topBlitz, rapid: topRapid };
-    await redis.set(LEADERBOARD_CACHE_KEY, JSON.stringify(result), 'EX', LEADERBOARD_CACHE_TTL_SECONDS);
+    await this.cacheService.setJson(LEADERBOARD_CACHE_KEY, result, LEADERBOARD_CACHE_TTL_SECONDS);
     return result;
   }
 

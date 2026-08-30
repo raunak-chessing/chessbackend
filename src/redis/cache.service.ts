@@ -110,10 +110,18 @@ export class CacheService {
     return this.client.hincrby(key, field, amount);
   }
 
+  async hashDelete(key: string, field: string): Promise<void> {
+    await this.client.hdel(key, field);
+  }
+
   // --- sets ---
 
   async addToSet(key: string, member: string): Promise<void> {
     await this.client.sadd(key, member);
+  }
+
+  async removeFromSet(key: string, member: string): Promise<void> {
+    await this.client.srem(key, member);
   }
 
   async getSetMembers(key: string): Promise<string[]> {

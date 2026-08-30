@@ -2,7 +2,7 @@ import { Injectable, BadRequestException, ForbiddenException, Logger, OnModuleIn
 import { PrismaService } from '../prisma/prisma.service';
 import type { Prisma, PlayerInventory } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
-import { RedisService } from '../redis/redis.service';
+import { CacheService, CacheSubscription } from '../redis/cache.service';
 import { WagerLockService } from './wager-lock.service';
 import * as crypto from 'crypto';
 
@@ -21,17 +21,14 @@ interface WagerPool {
 @Injectable()
 export class WagerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WagerService.name);
-  private redisClient: ReturnType<RedisService['getClient']>;
-  private eventSubscriber: ReturnType<RedisService['getClient']> | null = null;
+  private subscription: CacheSubscription | null = null;
 
   constructor(
     private prisma: PrismaService,
     private configService: ConfigService,
-    private redisService: RedisService,
+    private cacheService: CacheService,
     private wagerLockService: WagerLockService,
-  ) {
-    this.redisClient = this.redisService.getClient();
-  }
+  ) {}
 
   async onModuleInit() {
     this.logger.log('WagerService (Enterprise) Initialized');
@@ -39,26 +36,24 @@ export class WagerService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleDestroy() {
-    this.eventSubscriber?.disconnect();
+    this.subscription?.unsubscribe();
   }
 
   private listenForGameEndEvents() {
-    this.eventSubscriber = this.redisService.getClient().duplicate();
-    this.eventSubscriber.subscribe('gameserver:events', (err) => {
-      if (err) this.logger.error('Failed to subscribe to gameserver events', err);
+    this.subscription = this.cacheService.subscribe('gameserver:events', (message) => {
+      void this.handleGameEndMessage(message);
     });
+  }
 
-    this.eventSubscriber.on('message', async (channel, message) => {
-      if (channel !== 'gameserver:events') return;
-      try {
-        const event = JSON.parse(message);
-        if (event.type === 'game_ended' && event.gameId) {
-          await this.settleWagersForGame(event.gameId);
-        }
-      } catch (e) {
-        this.logger.error('Error processing game_ended event for wager settlement', e as Error);
+  private async handleGameEndMessage(message: string): Promise<void> {
+    try {
+      const event = JSON.parse(message);
+      if (event.type === 'game_ended' && event.gameId) {
+        await this.settleWagersForGame(event.gameId);
       }
-    });
+    } catch (e) {
+      this.logger.error('Error processing game_ended event for wager settlement', e as Error);
+    }
   }
 
   private async settleWagersForGame(gameId: string) {
@@ -85,8 +80,8 @@ export class WagerService implements OnModuleInit, OnModuleDestroy {
       [player2Id]: 1 / p2Prob,
     };
 
-    await this.redisClient.hset(`wager_odds:${gameId}`, odds);
-    await this.redisClient.expire(`wager_odds:${gameId}`, 86400);
+    await this.cacheService.hashSetAll(`wager_odds:${gameId}`, odds);
+    await this.cacheService.expire(`wager_odds:${gameId}`, 86400);
 
     this.logger.log(`Created Redis Wager Pool for game ${gameId}. Odds: ${player1Id}(${odds[player1Id].toFixed(2)}x) vs ${player2Id}(${odds[player2Id].toFixed(2)}x)`);
     return odds;
@@ -103,7 +98,7 @@ export class WagerService implements OnModuleInit, OnModuleDestroy {
       throw new ForbiddenException('Wagering is disabled for this account');
     }
 
-    const oddsExists = await this.redisClient.exists(`wager_odds:${gameId}`);
+    const oddsExists = await this.cacheService.exists(`wager_odds:${gameId}`);
     if (!oddsExists) throw new BadRequestException('No active betting pool for this game');
 
     const result = await this.wagerLockService.withLock(gameId, 5, async () => {
@@ -116,8 +111,8 @@ export class WagerService implements OnModuleInit, OnModuleDestroy {
       }
 
       try {
-        await this.redisClient.hincrby(`wager_pool:${gameId}`, `${userId}:${predictedWinnerId}`, amount);
-        await this.redisClient.expire(`wager_pool:${gameId}`, 86400);
+        await this.cacheService.hashIncrementBy(`wager_pool:${gameId}`, `${userId}:${predictedWinnerId}`, amount);
+        await this.cacheService.expire(`wager_pool:${gameId}`, 86400);
       } catch (err) {
         await this.prisma.playerInventory.update({
           where: { userId },
@@ -126,7 +121,7 @@ export class WagerService implements OnModuleInit, OnModuleDestroy {
         throw err;
       }
 
-      const oddsStr = await this.redisClient.hget(`wager_odds:${gameId}`, predictedWinnerId);
+      const oddsStr = await this.cacheService.hashGet(`wager_odds:${gameId}`, predictedWinnerId);
       return { success: true, odds: oddsStr ? parseFloat(oddsStr) : 1 };
     });
 
@@ -137,16 +132,16 @@ export class WagerService implements OnModuleInit, OnModuleDestroy {
   }
 
   async getOdds(gameId: string) {
-    const odds = await this.redisClient.hgetall(`wager_odds:${gameId}`);
+    const odds = await this.cacheService.hashGetAll(`wager_odds:${gameId}`);
     return odds;
   }
 
   async settleWagers(gameId: string, actualWinnerId: string | null) {
     const settled = await this.wagerLockService.withLock(gameId, 10, async () => {
-      const pool = await this.redisClient.hgetall(`wager_pool:${gameId}`);
+      const pool = await this.cacheService.hashGetAll(`wager_pool:${gameId}`);
       if (!pool || Object.keys(pool).length === 0) return;
 
-      const odds = await this.redisClient.hgetall(`wager_odds:${gameId}`);
+      const odds = await this.cacheService.hashGetAll(`wager_odds:${gameId}`);
 
       const claim = await this.prisma.game.updateMany({
         where: { id: gameId, wagersSettledAt: null },
@@ -188,8 +183,8 @@ export class WagerService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      await this.redisClient.del(`wager_pool:${gameId}`);
-      await this.redisClient.del(`wager_odds:${gameId}`);
+      await this.cacheService.delete(`wager_pool:${gameId}`);
+      await this.cacheService.delete(`wager_odds:${gameId}`);
     });
 
     if (settled === null) {

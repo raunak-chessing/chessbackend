@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { RedisService } from '../redis/redis.service';
+import { CacheService } from '../redis/cache.service';
 import { SocialEventService } from './social-event.service';
 import * as crypto from 'crypto';
 
@@ -8,7 +8,7 @@ import * as crypto from 'crypto';
 export class SocialService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly redisService: RedisService,
+    private readonly cacheService: CacheService,
     private readonly socialEventService: SocialEventService,
   ) {}
 
@@ -33,10 +33,9 @@ export class SocialService {
       return isRequester ? f.receiver : f.requester;
     });
 
-    const redis = this.redisService.getClient();
     const result = await Promise.all(
       mappedFriends.map(async (friend) => {
-        const count = await redis.get(`presence:${friend.id}`);
+        const count = await this.cacheService.get(`presence:${friend.id}`);
         return {
           ...friend,
           isOnline: count ? parseInt(count) > 0 : false,
@@ -77,7 +76,7 @@ export class SocialService {
     const lockKey = `friend_req:${min}:${max}`;
     
     // Acquire simple Redis lock
-    const locked = await this.redisService.getClient().set(lockKey, '1', 'EX', 5, 'NX');
+    const locked = await this.cacheService.acquireLock(lockKey, 5);
     if (!locked) {
       throw new BadRequestException('Friendship request already in progress');
     }
@@ -103,7 +102,7 @@ export class SocialService {
       await this.socialEventService.publish(receiverId, 'friendRequestReceived', newReq);
       return newReq;
     } finally {
-      await this.redisService.getClient().del(lockKey);
+      await this.cacheService.releaseLock(lockKey);
     }
   }
 

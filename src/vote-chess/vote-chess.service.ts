@@ -1,35 +1,35 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { RedisService } from '../redis/redis.service';
-import type Redis from 'ioredis';
+import { CacheService } from '../redis/cache.service';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { Chess } from 'chess.js';
 
+export interface BossFightState {
+  fen: string;
+  isActive: boolean;
+  turnCount: number;
+}
+
 @Injectable()
 export class VoteChessService implements OnModuleInit {
-  private readonly redisClient: Redis;
   private readonly logger = new Logger(VoteChessService.name);
 
   constructor(
     private prisma: PrismaService,
-    private redisService: RedisService,
-  ) {
-    this.redisClient = this.redisService.getClient();
-  }
+    private cacheService: CacheService,
+  ) {}
 
   async onModuleInit() {
     this.logger.log('Vote Chess Module Initialized');
   }
 
   async getActiveBossFight() {
-    const data = await this.redisClient.get('boss_fight_state');
-    if (!data) return null;
-    return JSON.parse(data);
+    return this.cacheService.getJson<BossFightState>('boss_fight_state');
   }
 
   async initializeDefaultState() {
     const state = { fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1', isActive: true, turnCount: 0 };
-    await this.redisClient.set('boss_fight_state', JSON.stringify(state));
+    await this.cacheService.setJson('boss_fight_state', state);
     return state;
   }
 
@@ -49,7 +49,7 @@ export class VoteChessService implements OnModuleInit {
     }
 
     // Add to Redis Hash (userId -> sanMove) so each user only gets 1 vote
-    await this.redisClient.hset('boss_fight_votes', userId, sanMove);
+    await this.cacheService.hashSet('boss_fight_votes', userId, sanMove);
     return { success: true, move: sanMove };
   }
 
@@ -61,7 +61,7 @@ export class VoteChessService implements OnModuleInit {
     this.logger.log('Executing majority vote against The Titan...');
     
     // Tally votes
-    const votes = await this.redisClient.hgetall('boss_fight_votes');
+    const votes = await this.cacheService.hashGetAll('boss_fight_votes');
     const tally: Record<string, number> = {};
     for (const move of Object.values(votes)) {
       tally[move] = (tally[move] || 0) + 1;
@@ -117,7 +117,7 @@ export class VoteChessService implements OnModuleInit {
       // Apply global buffs if Server won...
     }
 
-    await this.redisClient.set('boss_fight_state', JSON.stringify(state));
-    await this.redisClient.del('boss_fight_votes'); // reset votes for next turn
+    await this.cacheService.setJson('boss_fight_state', state);
+    await this.cacheService.delete('boss_fight_votes'); // reset votes for next turn
   }
 }

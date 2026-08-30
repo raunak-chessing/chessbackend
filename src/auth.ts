@@ -4,15 +4,14 @@ import { emailOTP } from 'better-auth/plugins';
 import { PrismaClient } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { MailService } from './mail/mail.service';
-import { RedisService } from './redis/redis.service';
+import { CacheService } from './redis/cache.service';
 
 export const getAuth = (
   prisma: PrismaClient,
   mailService: MailService,
   configService: ConfigService,
-  redisService: RedisService,
+  cacheService: CacheService,
 ) => {
-  const redis = redisService.getClient();
   const googleClientId = configService.get<string>('GOOGLE_CLIENT_ID');
   const googleClientSecret = configService.get<string>('GOOGLE_CLIENT_SECRET');
   const gitHubClientId = configService.get<string>('GITHUB_CLIENT_ID');
@@ -63,17 +62,12 @@ export const getAuth = (
       requireEmailVerification: true,
     },
     secondaryStorage: {
-      get: (key) => redis.get(key),
-      set: async (key, value, ttl) => {
-        if (ttl) await redis.set(key, value, 'EX', ttl);
-        else await redis.set(key, value);
-      },
-      delete: async (key) => {
-        await redis.del(key);
-      },
+      get: (key) => cacheService.get(key),
+      set: (key, value, ttl) => cacheService.set(key, value, ttl),
+      delete: (key) => cacheService.delete(key),
       increment: async (key, ttl) => {
-        const count = await redis.incr(key);
-        if (count === 1) await redis.expire(key, ttl);
+        const count = await cacheService.increment(key);
+        if (count === 1) await cacheService.expire(key, ttl);
         return count;
       },
     },
